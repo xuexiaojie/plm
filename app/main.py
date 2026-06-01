@@ -70,6 +70,8 @@ from app.schemas import (
     RunNodeRequest,
     RunTreeRequest,
 )
+from app.walking_beam_level2_offline import DEFAULT_CASE as STEP_FURNACE_DEFAULT_CASE
+from app.walking_beam_level2_offline import run as run_step_furnace_offline_model
 
 
 @asynccontextmanager
@@ -332,7 +334,7 @@ def _home_page_html() -> str:
     )
     step_furnace_children = "".join(
         [
-            render_icon_button("二级计算离线模型", "补充缺省条目并打开二级离线模型模块，等待人工点击开始计算", resolve_menu_icon("步进炉计算"), "openLevel2StepFurnaceModel()"),
+            render_icon_button("二级计算离线模型", "直接进入梁式步进炉二级离线模型工作台", resolve_menu_icon("步进炉计算"), "openLevel2StepFurnaceModel()"),
             render_icon_button("加热曲线计算", "预留代码挂载位", resolve_menu_icon("步进炉计算"), "showPlaceholder('加热曲线计算')"),
             render_icon_button("换热器校核", "预留代码挂载位", resolve_menu_icon("步进炉计算"), "showPlaceholder('换热器校核')"),
             render_icon_button("热平衡核算", "预留代码挂载位", resolve_menu_icon("步进炉计算"), "showPlaceholder('热平衡核算')"),
@@ -527,7 +529,7 @@ def _home_page_html() -> str:
       }}
 
       function openLevel2StepFurnaceModel() {{
-        window.location.href = '/compute?focus=step-furnace-level2&prepare=1';
+        window.location.href = '/step-furnace-level2';
       }}
 
       function openAnalysisPanel(panelName) {{
@@ -576,6 +578,35 @@ def compute_page() -> str:
     return _compute_page_html()
 
 
+@app.get("/step-furnace-level2", response_class=HTMLResponse)
+def step_furnace_level2_page() -> str:
+    return _step_furnace_level2_page_html()
+
+
+@app.post("/api/run")
+def run_step_furnace_level2(payload: dict) -> dict:
+    mode = str(payload.get("mode", "optimize"))
+    model_payload = {
+        "billet": payload.get("billet") or {},
+        "process": payload.get("process") or {},
+        "zones": payload.get("zones") or STEP_FURNACE_DEFAULT_CASE["zones"],
+    }
+    result = run_step_furnace_offline_model(
+        {
+            "model_payload": model_payload,
+            "run_options": {"mode": mode},
+            "node_metadata": {
+                "furnace_type": "梁式步进炉",
+                "model_level": "二级",
+                "model_mode": "offline",
+            },
+        }
+    )
+    if result.get("status") != "success":
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=result)
+    return result
+
+
 @app.get("/entry", response_class=HTMLResponse)
 def entry_page() -> str:
     return _feedback_page_html()
@@ -584,6 +615,177 @@ def entry_page() -> str:
 @app.get("/feedback", response_class=HTMLResponse)
 def feedback_page() -> str:
     return _feedback_page_html()
+
+
+def _step_furnace_level2_page_html() -> str:
+    return """
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>梁式步进炉二级离线模型</title>
+    <style>
+      :root { color-scheme: light; --bg: #08101e; --panel: rgba(15, 23, 42, 0.92); --panel-soft: rgba(2, 8, 23, 0.36); --text: #eef2ff; --muted: #94a3b8; --accent: #60a5fa; --accent-2: #22c55e; --line: rgba(148, 163, 184, 0.2); --danger: #ef4444; }
+      * { box-sizing: border-box; }
+      body { margin: 0; font-family: Arial, Helvetica, sans-serif; background: linear-gradient(180deg, #08101e 0%, #101a31 100%); color: var(--text); }
+      .wrap { max-width: 1440px; margin: 0 auto; padding: 24px 20px 80px; }
+      .hero, .card, .info-card { background: var(--panel); border: 1px solid var(--line); border-radius: 20px; }
+      .hero { padding: 24px; }
+      h1, h2, h3 { margin-top: 0; }
+      p, .muted { color: var(--muted); }
+      .actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 16px; }
+      .btn { display: inline-block; padding: 12px 16px; border-radius: 12px; text-decoration: none; font-weight: bold; border: 1px solid var(--line); color: var(--text); background: transparent; cursor: pointer; }
+      .btn-primary { background: var(--accent); color: #081225; border-color: transparent; }
+      .info-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 18px; }
+      .info-card, .card { padding: 18px; }
+      .section-label { margin: 0 0 10px; color: var(--accent); font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; }
+      .workbench { display: grid; grid-template-columns: minmax(360px, 0.92fr) minmax(0, 1.08fr); gap: 18px; margin-top: 18px; align-items: start; }
+      .stack { display: grid; gap: 18px; }
+      .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+      .field { display: grid; gap: 6px; }
+      label { color: #cbd5e1; font-size: 13px; }
+      .input { width: 100%; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--line); background: rgba(2, 8, 23, 0.5); color: var(--text); }
+      .result-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+      .metric { border: 1px solid var(--line); border-radius: 16px; padding: 14px; background: var(--panel-soft); min-height: 86px; }
+      .metric-title { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+      .metric-value { font-size: 20px; font-weight: bold; word-break: break-word; }
+      .process-list { display: grid; gap: 10px; }
+      .process-item { border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; background: rgba(2, 8, 23, 0.24); }
+      .code { white-space: pre-wrap; word-break: break-word; font-family: monospace; font-size: 12px; color: #cbd5e1; background: rgba(2, 8, 23, 0.36); border: 1px solid var(--line); border-radius: 14px; padding: 12px; }
+      .ok { color: var(--accent-2); }
+      .danger { color: var(--danger); }
+      @media (max-width: 1100px) { .workbench, .info-grid { grid-template-columns: 1fr; } }
+      @media (max-width: 720px) { .form-grid, .result-grid { grid-template-columns: 1fr; } }
+    </style>
+  </head>
+  <body>
+    <main class="wrap">
+      <section class="hero">
+        <h1>梁式步进炉二级离线模型</h1>
+        <p>左侧编辑工艺输入 JSON，右侧查看离线仿真或优化结果。</p>
+        <div class="actions"><a class="btn" href="/home">返回主菜单</a><a class="btn" href="/compute">计算台</a><button class="btn btn-primary" onclick="runModel()">开始计算</button></div>
+        <div class="info-grid">
+          <div class="info-card"><div class="section-label">程序入口</div><strong>walking_beam_level2_offline.py</strong></div>
+          <div class="info-card"><div class="section-label">服务接口</div><strong>POST /api/run</strong></div>
+        </div>
+      </section>
+
+      <section class="workbench">
+        <aside class="stack">
+          <article class="card">
+            <div class="section-label">输入参数</div>
+            <h2>钢坯参数</h2>
+            <div class="form-grid">
+              <div class="field"><label>钢坯宽度 m</label><input class="input" id="width_m" type="number" step="0.01" value="0.15" /></div>
+              <div class="field"><label>钢坯厚度 m</label><input class="input" id="thickness_m" type="number" step="0.01" value="0.15" /></div>
+              <div class="field"><label>钢坯长度 m</label><input class="input" id="length_m" type="number" step="0.1" value="6" /></div>
+              <div class="field"><label>密度 kg/m3</label><input class="input" id="density" type="number" step="1" value="7850" /></div>
+              <div class="field"><label>比热 J/(kg*K)</label><input class="input" id="specific_heat" type="number" step="1" value="690" /></div>
+              <div class="field"><label>导热系数 W/(m*K)</label><input class="input" id="conductivity" type="number" step="1" value="34" /></div>
+              <div class="field"><label>黑度</label><input class="input" id="emissivity" type="number" step="0.01" value="0.82" /></div>
+              <div class="field"><label>入炉温度 C</label><input class="input" id="entry_temp_c" type="number" step="1" value="30" /></div>
+              <div class="field"><label>目标出炉温度 C</label><input class="input" id="target_exit_temp_c" type="number" step="1" value="1180" /></div>
+              <div class="field"><label>最大表里温差 C</label><input class="input" id="max_core_surface_delta_c" type="number" step="1" value="30" /></div>
+              <div class="field"><label>最大升温速率 C/min</label><input class="input" id="max_rise_rate_c_per_min" type="number" step="1" value="18" /></div>
+            </div>
+          </article>
+          <article class="card">
+            <h2>步进参数</h2>
+            <div class="form-grid">
+              <div class="field"><label>步距 m</label><input class="input" id="step_length_m" type="number" step="0.1" value="0.5" /></div>
+              <div class="field"><label>步进周期 s</label><input class="input" id="step_cycle_s" type="number" step="1" value="45" /></div>
+            </div>
+          </article>
+          <article class="card">
+            <h2>炉温分区</h2>
+            <div class="form-grid">
+              <div class="field"><label>预热段设定 C</label><input class="input" id="zone_0_temp" type="number" step="1" value="870" /></div>
+              <div class="field"><label>加热一段设定 C</label><input class="input" id="zone_1_temp" type="number" step="1" value="1130" /></div>
+              <div class="field"><label>加热二段设定 C</label><input class="input" id="zone_2_temp" type="number" step="1" value="1310" /></div>
+              <div class="field"><label>均热段设定 C</label><input class="input" id="zone_3_temp" type="number" step="1" value="1300" /></div>
+            </div>
+          </article>
+        </aside>
+
+        <section class="stack">
+          <article class="card">
+            <div class="section-label">计算结果</div>
+            <h2>最终结果</h2>
+            <div id="run-message" class="muted">页面打开后已准备默认工况，点击“开始计算”获取结果。</div>
+            <div class="result-grid" id="result-grid" style="margin-top:14px;"></div>
+          </article>
+          <article class="card">
+            <h2>计算过程</h2>
+            <div id="process-panel" class="process-list"><div class="muted">暂无计算过程。</div></div>
+          </article>
+          <article class="card">
+            <h2>输入 JSON</h2>
+            <div class="code" id="input-json"></div>
+          </article>
+        </section>
+      </section>
+    </main>
+    <script>
+      const zoneNames = ['预热段', '加热一段', '加热二段', '均热段'];
+      const zoneLengths = [8, 8, 9, 7];
+      const zoneHtc = [115, 150, 175, 145];
+      function num(id) { return Number(document.getElementById(id).value || 0); }
+      function escapeHtml(value) { return String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;'); }
+      function buildPayload() {
+        return {
+          mode: 'optimize',
+          billet: {
+            width_m: num('width_m'), thickness_m: num('thickness_m'), length_m: num('length_m'), density: num('density'),
+            specific_heat: num('specific_heat'), conductivity: num('conductivity'), emissivity: num('emissivity')
+          },
+          process: {
+            entry_temp_c: num('entry_temp_c'), target_exit_temp_c: num('target_exit_temp_c'), max_core_surface_delta_c: num('max_core_surface_delta_c'),
+            max_rise_rate_c_per_min: num('max_rise_rate_c_per_min'), step_length_m: num('step_length_m'), step_cycle_s: num('step_cycle_s')
+          },
+          zones: zoneNames.map((name, index) => ({ name, length_m: zoneLengths[index], furnace_temp_c: num(`zone_${index}_temp`), heat_transfer_coeff: zoneHtc[index] }))
+        };
+      }
+      function renderInputJson() { document.getElementById('input-json').textContent = JSON.stringify(buildPayload(), null, 2); }
+      function renderMetric(title, value) { return `<div class="metric"><div class="metric-title">${escapeHtml(title)}</div><div class="metric-value">${escapeHtml(value)}</div></div>`; }
+      function renderResults(outputs) {
+        const temps = outputs.exit_temperatures || {};
+        const setpoints = Object.values(outputs.optimized_setpoints_c || {}).join(' / ');
+        document.getElementById('result-grid').innerHTML = [
+          renderMetric('模式', outputs.operation_mode === 'optimize' ? '离线优化' : '离线仿真'),
+          renderMetric('综合目标值', outputs.objective_value),
+          renderMetric('出炉平均温度', `${temps.average_temp_c} C`),
+          renderMetric('目标偏差', `${outputs.target_deviation_c} C`),
+          renderMetric('表面温度', `${temps.surface_temp_c} C`),
+          renderMetric('心部温度', `${temps.core_temp_c} C`),
+          renderMetric('表里温差', `${outputs.core_surface_delta_c} C`),
+          renderMetric('最大升温速率', `${outputs.max_rise_rate_c_per_min} C/min`),
+          renderMetric('炉温设定值', setpoints),
+          renderMetric('能耗代理项', outputs.energy_proxy),
+          renderMetric('氧化烧损代理项', outputs.oxidation_proxy),
+          renderMetric('温升曲线偏差项', Math.round(Math.abs(outputs.target_deviation_c || 0) * 1315.34 * 100) / 100)
+        ].join('');
+        document.getElementById('process-panel').innerHTML = (outputs.zone_results || []).map((zone) => `<div class="process-item"><strong>${escapeHtml(zone.zone_name)}</strong><div class="muted">停留时间: ${escapeHtml(zone.residence_time_s)} s | 炉温: ${escapeHtml(zone.furnace_setpoint_c)} C</div><div class="muted">出口表面: ${escapeHtml(zone.surface_temp_c)} C | 心部: ${escapeHtml(zone.core_temp_c)} C | 平均: ${escapeHtml(zone.average_temp_c)} C</div></div>`).join('');
+      }
+      async function runModel() {
+        renderInputJson();
+        const message = document.getElementById('run-message');
+        message.className = 'muted';
+        message.textContent = '正在执行梁式步进炉二级离线模型...';
+        const res = await fetch('/api/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(buildPayload()) });
+        if (!res.ok) { message.className = 'danger'; message.textContent = `计算失败: ${res.status}`; return; }
+        const data = await res.json();
+        renderResults(data.outputs || {});
+        message.className = 'ok';
+        message.textContent = `计算完成，已调用 ${data.outputs.file_name}`;
+      }
+      document.querySelectorAll('.input').forEach((input) => input.addEventListener('input', renderInputJson));
+      renderInputJson();
+      runModel();
+    </script>
+  </body>
+</html>
+"""
 
 
 def _compute_page_html() -> str:

@@ -64,10 +64,39 @@ def test_login_and_home_menu_pages() -> None:
     assert "反馈数据分析" in home_resp.text
     assert "当前缺省打开计算模块，首个计算节点固定为二级计算离线模型。" in home_resp.text
     assert "二级计算离线模型" in home_resp.text
-    assert "补充缺省条目并打开二级离线模型模块，等待人工点击开始计算" in home_resp.text
+    assert "直接进入梁式步进炉二级离线模型工作台" in home_resp.text
     assert "showTopTab('compute');" in home_resp.text
     assert "openModulePanel('step-furnace');" in home_resp.text
-    assert "prepare=1" in home_resp.text
+    assert "/step-furnace-level2" in home_resp.text
+
+    level2_resp = client.get("/step-furnace-level2")
+    assert level2_resp.status_code == 200
+    assert "梁式步进炉二级离线模型" in level2_resp.text
+    assert "POST /api/run" in level2_resp.text
+    assert "钢坯参数" in level2_resp.text
+    assert "计算结果" in level2_resp.text
+    assert "计算过程" in level2_resp.text
+
+    api_run_resp = client.post(
+        "/api/run",
+        json={
+            "mode": "optimize",
+            "billet": {"width_m": 0.15, "thickness_m": 0.15, "length_m": 6, "density": 7850, "specific_heat": 690, "conductivity": 34, "emissivity": 0.82},
+            "process": {"entry_temp_c": 30, "target_exit_temp_c": 1180, "max_core_surface_delta_c": 30, "max_rise_rate_c_per_min": 18, "step_length_m": 0.5, "step_cycle_s": 45},
+            "zones": [
+                {"name": "预热段", "length_m": 8, "furnace_temp_c": 870, "heat_transfer_coeff": 115},
+                {"name": "加热一段", "length_m": 8, "furnace_temp_c": 1130, "heat_transfer_coeff": 150},
+                {"name": "加热二段", "length_m": 9, "furnace_temp_c": 1310, "heat_transfer_coeff": 175},
+                {"name": "均热段", "length_m": 7, "furnace_temp_c": 1300, "heat_transfer_coeff": 145},
+            ],
+        },
+    )
+    assert api_run_resp.status_code == 200
+    api_run_data = api_run_resp.json()
+    assert api_run_data["status"] == "success"
+    assert api_run_data["outputs"]["file_name"] == "walking_beam_level2_offline.py"
+    assert api_run_data["outputs"]["furnace_type"] == "梁式步进炉"
+    assert len(api_run_data["outputs"]["zone_results"]) == 4
 
     feedback_resp = client.get("/feedback")
     assert feedback_resp.status_code == 200
