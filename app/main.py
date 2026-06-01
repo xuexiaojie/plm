@@ -418,7 +418,7 @@ def _home_page_html() -> str:
             <div class="small">四级结构：登录 -> 首页主菜单 -> 大模块 -> 子功能图标按钮</div>
           </div>
           <div class="row">
-            <a class="btn" href="/compute">进入现有计算台</a>
+            <a class="btn" href="#top-tab-compute" onclick="showTopTab('compute'); return false;">进入计算菜单</a>
             <a class="btn" href="/feedback">进入反馈台</a>
             <a class="btn" href="/analysis">进入现有分析台</a>
           </div>
@@ -664,7 +664,7 @@ def _step_furnace_level2_page_html() -> str:
       <section class="hero">
         <h1>梁式步进炉二级离线模型</h1>
         <p>左侧编辑工艺输入 JSON，右侧查看离线仿真或优化结果。</p>
-        <div class="actions"><a class="btn" href="/home">返回主菜单</a><a class="btn" href="/compute">计算台</a><button class="btn btn-primary" onclick="runModel()">开始计算</button></div>
+        <div class="actions"><a class="btn" href="/home">返回主菜单</a><a class="btn" href="/compute">计算模块</a><button class="btn btn-primary" onclick="runModel()">开始计算</button></div>
         <div class="info-grid">
           <div class="info-card"><div class="section-label">程序入口</div><strong>walking_beam_level2_offline.py</strong></div>
           <div class="info-card"><div class="section-label">服务接口</div><strong>POST /api/run</strong></div>
@@ -795,17 +795,15 @@ def _compute_page_html() -> str:
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>计算平台计算台</title>
+    <title>计算模块入口</title>
     <style>
-      :root { color-scheme: light; --bg: #09111f; --panel: rgba(15, 23, 42, 0.9); --text: #eef2ff; --muted: #94a3b8; --accent: #60a5fa; --accent-2: #22c55e; --line: rgba(148, 163, 184, 0.18); --danger: #ef4444; }
+      :root { color-scheme: light; --bg: #09111f; --panel: rgba(15, 23, 42, 0.9); --panel-soft: rgba(2, 8, 23, 0.32); --text: #eef2ff; --muted: #94a3b8; --accent: #60a5fa; --line: rgba(148, 163, 184, 0.18); }
       * { box-sizing: border-box; }
       body { margin: 0; font-family: Arial, Helvetica, sans-serif; background: linear-gradient(180deg, #08101e 0%, #101a31 100%); color: var(--text); }
-      .wrap { max-width: 1280px; margin: 0 auto; padding: 24px 20px 80px; }
+      .wrap { max-width: 1180px; margin: 0 auto; padding: 24px 20px 80px; }
       .hero, .card { background: var(--panel); border: 1px solid var(--line); border-radius: 20px; }
       .hero { padding: 24px; }
-      .page-grid { display: grid; grid-template-columns: 380px minmax(0, 1fr); gap: 18px; margin-top: 20px; }
-      .stack { display: grid; gap: 18px; }
-      .result-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+      .module-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 18px; margin-top: 20px; }
       .card { padding: 20px; }
       .section-label { margin: 0 0 12px; color: var(--accent); font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; }
       h1, h2 { margin-top: 0; }
@@ -814,63 +812,33 @@ def _compute_page_html() -> str:
       .btn { display: inline-block; padding: 12px 16px; border-radius: 12px; text-decoration: none; font-weight: bold; }
       .btn-primary { background: var(--accent); color: #081225; }
       .btn-secondary { border: 1px solid var(--line); color: var(--text); }
-      button.btn { cursor: pointer; }
-      .field { display: grid; gap: 6px; margin-top: 12px; }
-      .input, .select { width: 100%; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--line); background: rgba(2, 8, 23, 0.45); color: var(--text); }
-      .item { border: 1px solid var(--line); background: rgba(2, 8, 23, 0.22); border-radius: 14px; padding: 12px 14px; }
-      .list { display: grid; gap: 10px; margin-top: 12px; }
-      .empty { color: var(--muted); font-size: 14px; padding: 8px 0; }
-      .pill { display: inline-block; padding: 4px 8px; border-radius: 999px; font-size: 12px; border: 1px solid var(--line); margin-top: 6px; }
-      .group-node { border-color: rgba(96, 165, 250, 0.55); background: rgba(30, 41, 59, 0.78); }
-      .group-pill { color: #fbbf24; border-color: rgba(251, 191, 36, 0.4); }
-      .ok { color: var(--accent-2); }
-      .danger { color: var(--danger); }
-      .code { white-space: pre-wrap; word-break: break-word; font-family: monospace; font-size: 12px; color: #cbd5e1; }
-      .report-link { margin-top: 10px; display: inline-flex; }
-      @media (max-width: 960px) { .page-grid, .result-grid { grid-template-columns: 1fr; } }
+      .card { background: var(--panel-soft); }
+      .card.active { border-color: rgba(96, 165, 250, 0.58); background: rgba(30, 41, 59, 0.76); }
+      .disabled { opacity: 0.64; }
+      @media (max-width: 720px) { .module-grid { grid-template-columns: 1fr; } }
     </style>
   </head>
   <body>
     <main class="wrap">
       <section class="hero">
-        <h1>计算平台计算台</h1>
-        <p>左侧只负责执行，右侧只负责结构、执行记录和结果查看。</p>
+        <h1>计算模块入口</h1>
+        <p>所有计算功能都直接进入对应计算模块。这里仅保留模块入口，不再显示准备、挂靠、树结构页面。</p>
         <div class="actions"><a class="btn btn-secondary" href="/home">返回主菜单</a><a class="btn btn-secondary" href="/feedback">前往反馈台</a><a class="btn btn-secondary" href="/analysis">前往分析台</a></div>
       </section>
-      <section class="page-grid">
-        <aside class="stack">
-          <article class="card"><div class="section-label">二级离线模型测试区</div><h2>步进炉二级离线模型</h2><div id="context-panel" class="list"><div class="item"><strong>当前正在准备项目与名目</strong><div class="muted">点击步进炉下级功能按钮后，页面会自动补充缺省条目并拉起二级离线模型模块。</div></div></div><div class="actions"><button class="btn btn-primary" onclick="runPreferredOfflineNode()">开始计算</button><button class="btn btn-secondary" onclick="loadComputeData()">刷新</button></div><div id="compute-message" class="empty"></div></article>
-          <article class="card"><div class="section-label">挂靠状态区</div><h2>二级离线模型挂靠</h2><div id="binding-panel" class="list"><div class="item"><strong>当前未选择计算节点</strong><div class="muted">安装步进炉模块组后，选择“步进炉二级计算离线模型”可查看真实文件挂靠状态。</div></div></div></article>
-          <article class="card"><div class="section-label">模块组安装区</div><h2>计算模块组</h2><div class="muted">页面会自动安装步进炉计算分组，并把二级计算离线模型放在第一个计算节点。</div><div class="list"><div class="item group-node"><strong>步进炉</strong><div class="muted">安装后会生成模块分组树</div></div><div class="item"><strong>二级计算离线模型</strong><div class="muted">挂在步进炉分组下，作为第一个计算节点并支持直接执行</div></div><div class="item"><strong>功能分组</strong><div class="muted">加热曲线、水梁计算、排烟计算、传热计算、蓄热计算、空气管道、换热器、煤气管道、多工况</div></div></div></article>
-          <article class="card"><div class="section-label">树结构区</div><h2>当前树节点</h2><div id="compute-tree" class="empty">选择项目和名目后加载</div></article>
-        </aside>
-        <section class="stack">
-          <article class="card"><div class="section-label">执行说明区</div><div class="list"><div class="item"><strong>准备阶段</strong><div class="muted">点击步进炉下级功能按钮后，系统会自动补充缺省项目和缺省名目，并准备二级离线模型模块。</div></div><div class="item"><strong>人工确认</strong><div class="muted">页面准备完成后，由人工点击“开始计算”按钮触发实际计算。</div></div></div></article>
-          <section class="result-grid"><article class="card"><div class="section-label">执行记录区</div><h2>最近执行</h2><div id="execution-panel" class="empty">执行后显示摘要</div></article><article class="card"><div class="section-label">结果查看区</div><h2>执行结果</h2><div id="result-panel" class="empty">执行后显示节点结果</div></article></section>
-        </section>
+      <section class="module-grid">
+        <article class="card active">
+          <div class="section-label">步进炉</div>
+          <h2>二级计算离线模型</h2>
+          <p>直接进入梁式步进炉二级离线模型工作台，编辑参数并运行模型。</p>
+          <div class="actions"><a class="btn btn-primary" href="/step-furnace-level2">进入计算模块</a></div>
+        </article>
+        <article class="card disabled"><div class="section-label">步进炉</div><h2>加热曲线计算</h2><p>模块入口预留。</p></article>
+        <article class="card disabled"><div class="section-label">步进炉</div><h2>换热器校核</h2><p>模块入口预留。</p></article>
+        <article class="card disabled"><div class="section-label">步进炉</div><h2>热平衡核算</h2><p>模块入口预留。</p></article>
+        <article class="card disabled"><div class="section-label">辊底炉</div><h2>加热曲线计算</h2><p>模块入口预留。</p></article>
+        <article class="card disabled"><div class="section-label">环形炉</div><h2>加热曲线计算</h2><p>模块入口预留。</p></article>
       </section>
     </main>
-    <script>
-      let currentProjectId = null;
-      let currentItemId = null;
-      function renderContextPanel(content) { document.getElementById('context-panel').innerHTML = content; }
-      function escapeHtml(value) { return String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;'); }
-      async function fetchJson(url, options = {}) { const res = await fetch(url, options); if (!res.ok) { let detail = `${url} -> ${res.status}`; try { const data = await res.json(); if (data?.detail) { detail = `${detail} ${typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail)}`; } } catch (error) {} throw new Error(detail); } return res.status === 204 ? null : res.json(); }
-      function setMessage(text, tone = 'empty') { const el = document.getElementById('compute-message'); el.className = tone; el.textContent = text; }
-      function renderBindingPanel(content) { document.getElementById('binding-panel').innerHTML = content; }
-      async function ensureDefaultProjectAndItem() { let projects = await fetchJson('/projects'); let project = projects[0] || null; if (!project) { project = await fetchJson('/projects', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: '步进炉默认测试项目', owner_user_id: 'direct-button', status: 'draft' }) }); } const items = await fetchJson(`/projects/${project.id}/items`); let item = items[0] || null; if (!item) { item = await fetchJson(`/projects/${project.id}/items`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: '步进炉默认测试名目', code: 'STEP-FURNACE-DEFAULT', description: '点击二级离线模型计算时自动补充的缺省名目' }) }); } return { project, item }; }
-      async function loadProjects() { const projects = await fetchJson('/projects'); if (!projects.length) { document.getElementById('compute-tree').innerHTML = '<div class="empty">当前还没有项目与树结构</div>'; document.getElementById('execution-panel').innerHTML = '<div class="empty">暂无执行记录</div>'; document.getElementById('result-panel').innerHTML = '<div class="empty">暂无执行结果</div>'; renderContextPanel('<div class="item"><strong>当前还没有项目</strong><div class="muted">点击二级离线模型后，系统会自动补充缺省项目和缺省名目，并等待人工开始计算。</div></div>'); renderBindingPanel('<div class="item"><strong>当前没有挂靠信息</strong><div class="muted">点击二级离线模型后，系统会自动补全条目并挂靠模型。</div></div>'); return; } currentProjectId = Number(projects[0].id); renderContextPanel(`<div class="item"><strong>当前项目</strong><div class="muted">${escapeHtml(projects[0].name)} (#${projects[0].id})</div></div>`); await loadItems(currentProjectId); }
-      async function loadItems(projectId) { const items = await fetchJson(`/projects/${projectId}/items`); if (!items.length) { currentItemId = null; document.getElementById('compute-tree').innerHTML = '<div class="empty">当前项目还没有名目与树结构</div>'; renderContextPanel(`<div class="item"><strong>当前项目</strong><div class="muted">项目 #${projectId}</div></div><div class="item"><strong>当前没有名目</strong><div class="muted">点击二级离线模型后，系统会自动补充缺省名目，并等待人工开始计算。</div></div>`); renderBindingPanel('<div class="item"><strong>当前项目未挂靠二级离线模型</strong><div class="muted">点击二级离线模型后，系统会自动补全条目并挂靠模型。</div></div>'); return; } currentItemId = Number(items[0].id); renderContextPanel(`<div class="item"><strong>当前项目</strong><div class="muted">项目 #${projectId}</div></div><div class="item"><strong>当前名目</strong><div class="muted">${escapeHtml(items[0].name)} (#${items[0].id})</div></div>`); await loadTree(projectId, currentItemId); }
-      async function loadSelectedStepBinding(nodes) { const selectedNode = nodes.find((node) => node.name === '步进炉二级计算离线模型') || nodes[0] || null; if (!selectedNode || !selectedNode.calc_step_id) { renderBindingPanel('<div class="item"><strong>当前未挂靠真实模型文件</strong><div class="muted">页面会优先查找步进炉二级计算离线模型，并显示实际绑定的 Python 文件。</div></div>'); return; } const step = await fetchJson(`/calc-steps/${selectedNode.calc_step_id}`); const artifactPath = step.artifact_path || '未配置'; const scriptState = step.script_content ? '内联脚本' : '文件挂靠'; const mountedFile = artifactPath.split('/').pop(); renderBindingPanel(`<div class="item group-node"><strong>${escapeHtml(selectedNode.name)}</strong><div class="muted">步骤 ID: ${step.id} | 类型: ${escapeHtml(step.step_type)}</div><div class="muted">挂靠方式: ${escapeHtml(scriptState)}</div><div class="muted">真实文件: ${escapeHtml(mountedFile)}</div><div class="code">${escapeHtml(artifactPath)}</div></div>`); }
-      async function loadTree(projectId, itemId) { const nodes = await fetchJson(`/projects/${projectId}/items/${itemId}/tree`); const panel = document.getElementById('compute-tree'); if (!nodes.length) { panel.innerHTML = '<div class="empty">当前名目下还没有树节点</div>'; renderBindingPanel('<div class="item"><strong>当前名目未挂靠二级离线模型</strong><div class="muted">点击步进炉下级功能按钮后，页面会自动安装并开始计算。</div></div>'); return; } const calcNodes = nodes.filter((node) => node.node_type === 'calc' && node.calc_step_id); const focus = new URLSearchParams(window.location.search).get('focus'); if (focus === 'step-furnace-level2' && calcNodes.some((node) => node.name === '步进炉二级计算离线模型')) { setMessage('已定位到步进炉第二级计算模型'); } panel.innerHTML = nodes.map((node) => { const isLevel2 = node.name === '步进炉二级计算离线模型'; const itemClass = node.node_type === 'group' ? 'item group-node' : isLevel2 ? 'item group-node' : 'item'; const pillClass = node.node_type === 'calc' ? 'pill ok' : node.node_type === 'group' ? 'pill group-pill' : 'pill'; const stepLine = node.node_type === 'calc' ? `<div class="muted">步骤: ${escapeHtml(node.calc_step_id ?? '-')}</div>` : '<div class="muted">模块组节点</div>'; const mountLine = isLevel2 ? `<div class="muted">已挂靠文件: walking_beam_level2_offline.py</div>` : ''; return `<div class="${itemClass}"><strong>${'&nbsp;'.repeat(node.depth * 4)}${escapeHtml(node.name)}</strong><div class="muted">节点 ID: ${node.id} | 深度: ${node.depth}</div><span class="${pillClass}">${escapeHtml(node.node_type)}</span>${stepLine}${mountLine}</div>`; }).join(''); await loadSelectedStepBinding(calcNodes); }
-      async function ensurePreferredOfflineNodeId() { if (!currentProjectId || !currentItemId) { const defaults = await ensureDefaultProjectAndItem(); currentProjectId = Number(defaults.project.id); currentItemId = Number(defaults.item.id); renderContextPanel(`<div class="item"><strong>当前项目</strong><div class="muted">${escapeHtml(defaults.project.name)} (#${defaults.project.id})</div></div><div class="item"><strong>当前名目</strong><div class="muted">${escapeHtml(defaults.item.name)} (#${defaults.item.id})</div></div><div class="item"><strong>缺省条目</strong><div class="muted">已自动补充默认项目和默认名目，当前停在二级离线模型模块，等待人工点击开始计算。</div></div>`); } const nodes = await fetchJson(`/projects/${currentProjectId}/items/${currentItemId}/tree`); const level2Node = nodes.find((node) => node.name === '步进炉二级计算离线模型' && node.node_type === 'calc' && node.calc_step_id); if (level2Node) { await loadSelectedStepBinding(nodes.filter((node) => node.node_type === 'calc' && node.calc_step_id)); return Number(level2Node.id); } setMessage('未找到二级离线模型，正在自动安装步进炉模块组...'); const installedNodes = await fetchJson(`/projects/${currentProjectId}/items/${currentItemId}/install-step-furnace-modules`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ create_offline_step: true }) }); await loadTree(currentProjectId, currentItemId); const installedLevel2Node = installedNodes.find((node) => node.name === '步进炉二级计算离线模型' && node.node_type === 'calc' && node.calc_step_id); return installedLevel2Node ? Number(installedLevel2Node.id) : 0; }
-      async function preparePreferredOfflineNode() { const nodeId = await ensurePreferredOfflineNodeId(); if (!nodeId) { setMessage('当前没有可准备的步进炉二级离线模型', 'danger'); return; } setMessage('二级离线模型模块已准备完成，请人工点击“开始计算”'); }
-      async function runPreferredOfflineNode() { let nodeId = 0; try { nodeId = await ensurePreferredOfflineNodeId(); } catch (error) {} if (!nodeId) { setMessage('当前没有可直接计算的步进炉二级离线模型', 'danger'); return; } setMessage('正在执行步进炉二级计算离线模型...'); try { const execution = await fetchJson(`/tree/nodes/${nodeId}/run`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ started_by: 'direct-button' }) }); renderExecutions([execution]); setMessage(`计算完成，已调用步进炉二级计算离线模型，执行记录 #${execution.id}`, 'ok'); } catch (error) { setMessage(`计算失败: ${error.message}`, 'danger'); } }
-      function renderExecutions(executions) { const executionPanel = document.getElementById('execution-panel'); const resultPanel = document.getElementById('result-panel'); if (!executions.length) { executionPanel.innerHTML = '<div class="empty">当前名目下没有可执行计算节点</div>'; resultPanel.innerHTML = '<div class="empty">暂无执行结果</div>'; return; } executionPanel.innerHTML = executions.map((execution) => `<div class="item"><strong>执行 #${execution.id}</strong><div class="muted">根节点: ${execution.root_node_id} | 状态: ${escapeHtml(execution.status)}</div><div class="muted">开始时间: ${escapeHtml(execution.started_at)}</div><div class="actions"><button class="btn btn-secondary" onclick="loadExecutionResults(${execution.id})">查看结果</button><a class="btn btn-secondary report-link" href="/executions/${execution.id}/report" target="_blank">计算报告</a></div></div>`).join(''); loadExecutionResults(executions[executions.length - 1].id); }
-      async function loadExecutionResults(executionId) { const results = await fetchJson(`/executions/${executionId}/results`); const panel = document.getElementById('result-panel'); if (!results.length) { panel.innerHTML = '<div class="empty">当前执行没有结果数据</div>'; return; } panel.innerHTML = results.map((result) => `<div class="item"><strong>节点 ${result.node_id}</strong><div class="muted">状态: ${escapeHtml(result.status)} | 步骤: ${result.calc_step_id}</div><div class="code">${escapeHtml(JSON.stringify(result.output_json ?? {}, null, 2))}</div></div>`).join(''); }
-      async function loadComputeData() { await loadProjects(); }
-      loadComputeData().then(async () => { const prepare = new URLSearchParams(window.location.search).get('prepare'); if (prepare === '1') { await preparePreferredOfflineNode(); } });
-    </script>
   </body>
 </html>
 """

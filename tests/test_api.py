@@ -104,16 +104,15 @@ def test_login_and_home_menu_pages() -> None:
 
     compute_resp = client.get("/compute")
     assert compute_resp.status_code == 200
-    assert "步进炉二级离线模型" in compute_resp.text
-    assert "点击步进炉下级功能按钮后，页面会自动补充缺省条目并拉起二级离线模型模块。" in compute_resp.text
-    assert "系统会自动补充缺省项目和缺省名目，并等待人工开始计算。" in compute_resp.text
-    assert "开始计算" in compute_resp.text
-    assert "二级离线模型挂靠" in compute_resp.text
-    assert "walking_beam_level2_offline.py" in compute_resp.text
-    assert "ensurePreferredOfflineNodeId()" in compute_resp.text
-    assert "ensureDefaultProjectAndItem()" in compute_resp.text
-    assert "preparePreferredOfflineNode()" in compute_resp.text
-    assert "runPreferredOfflineNode()" in compute_resp.text
+    assert "计算模块入口" in compute_resp.text
+    assert "所有计算功能都直接进入对应计算模块" in compute_resp.text
+    assert "/step-furnace-level2" in compute_resp.text
+    assert "二级离线模型挂靠" not in compute_resp.text
+    assert "树结构区" not in compute_resp.text
+    assert "ensurePreferredOfflineNodeId()" not in compute_resp.text
+    assert "ensureDefaultProjectAndItem()" not in compute_resp.text
+    assert "preparePreferredOfflineNode()" not in compute_resp.text
+    assert "runPreferredOfflineNode()" not in compute_resp.text
 
 
 def test_project_tree_execution_flow() -> None:
