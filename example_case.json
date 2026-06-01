@@ -1,0 +1,45 @@
+{
+  "billet": {
+    "width_m": 0.15,
+    "thickness_m": 0.15,
+    "length_m": 6.0,
+    "density": 7850.0,
+    "cp": 690.0,
+    "conductivity": 34.0,
+    "emissivity": 0.82,
+    "initial_temp_c": 30.0,
+    "target_discharge_temp_c": 1180.0,
+    "max_surface_core_delta_c": 30.0,
+    "max_heating_rate_c_per_min": 18.0
+  },
+  "furnace": {
+    "walking_step_m": 0.5,
+    "step_period_s": 45.0,
+    "zones": [
+      {
+        "name": "preheat",
+        "length_m": 8.0,
+        "setpoint_c": 820.0,
+        "htc_w_m2k": 120.0
+      },
+      {
+        "name": "heating_1",
+        "length_m": 10.0,
+        "setpoint_c": 1030.0,
+        "htc_w_m2k": 165.0
+      },
+      {
+        "name": "heating_2",
+        "length_m": 10.0,
+        "setpoint_c": 1180.0,
+        "htc_w_m2k": 195.0
+      },
+      {
+        "name": "soaking",
+        "length_m": 7.0,
+        "setpoint_c": 1210.0,
+        "htc_w_m2k": 150.0
+      }
+    ]
+  }
+}
