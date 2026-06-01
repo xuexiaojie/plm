@@ -31,7 +31,7 @@ DEFAULT_CASE = {
     "process": {
         "entry_temp_c": 35.0,
         "target_exit_temp_c": 1180.0,
-        "max_core_surface_delta_c": 45.0,
+        "max_core_surface_delta_c": 5.0,
         "max_rise_rate_c_per_min": 28.0,
         "step_length_m": 0.75,
         "step_cycle_s": 48.0,
@@ -138,6 +138,10 @@ def simulate(case_data: dict, optimize: bool) -> dict:
             next_core -= over_limit * 0.38
             average_temp = (next_surface + next_core) / 2.0
             rise_rate = max_rise_rate
+
+        if next_surface - next_core > max_delta:
+            next_core = next_surface - max_delta
+            average_temp = (next_surface + next_core) / 2.0
 
         objective_energy += max(setpoint - average_temp, 0.0) * zone_length
         objective_oxidation += max(setpoint - 1100.0, 0.0) * zone_length / 100.0

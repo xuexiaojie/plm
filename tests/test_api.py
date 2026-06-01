@@ -77,6 +77,10 @@ def test_login_and_home_menu_pages() -> None:
     assert "炉段参数" in level2_resp.text or "炉温分区" in level2_resp.text
     assert "运行离线优化" in level2_resp.text
     assert "仅仿真" in level2_resp.text
+    assert "生成 PDF 报告" in level2_resp.text
+    assert "5次计算对比" in level2_resp.text
+    assert "toggleComparisonPanel" in level2_resp.text
+    assert "id=\"comparison-panel\" style=\"display:none;\"" in level2_resp.text
     assert "输入 JSON" not in level2_resp.text
     assert "计算结果" in level2_resp.text
     assert "计算过程" in level2_resp.text
@@ -84,13 +88,21 @@ def test_login_and_home_menu_pages() -> None:
     assert "分段温升曲线" in level2_resp.text
     assert "厚度方向温度云图" in level2_resp.text
     assert "结果参数表" in level2_resp.text
+    assert "最近 5 次计算对比" in level2_resp.text
+    assert "analysis-layout" in level2_resp.text
+    assert "对比界面" in level2_resp.text
+    assert "与“仅仿真 / 运行离线优化”计算界面并列展示" in level2_resp.text
+    assert "comparisonRuns" in level2_resp.text
+    assert "rememberComparison" in level2_resp.text
+    assert "原始参数" in level2_resp.text
+    assert "炉段原始参数" in level2_resp.text
 
     api_run_resp = client.post(
         "/api/run",
         json={
             "mode": "optimize",
             "billet": {"width_m": 0.15, "thickness_m": 0.12, "length_m": 6, "density": 7850, "specific_heat": 690, "conductivity": 38, "emissivity": 0.82},
-            "process": {"entry_temp_c": 30, "target_exit_temp_c": 920, "max_core_surface_delta_c": 500, "max_rise_rate_c_per_min": 45, "step_length_m": 0.2, "step_cycle_s": 70},
+            "process": {"entry_temp_c": 30, "target_exit_temp_c": 920, "max_core_surface_delta_c": 5, "max_rise_rate_c_per_min": 45, "step_length_m": 0.2, "step_cycle_s": 70},
             "zones": [
                 {"name": "preheat", "length_m": 20, "furnace_temp_c": 1100, "heat_transfer_coeff": 210},
                 {"name": "heating_1", "length_m": 20, "furnace_temp_c": 1280, "heat_transfer_coeff": 250},
@@ -106,10 +118,31 @@ def test_login_and_home_menu_pages() -> None:
     assert api_run_data["outputs"]["furnace_type"] == "梁式步进炉"
     assert api_run_data["outputs"]["operation_mode"] == "optimize"
     assert len(api_run_data["outputs"]["zone_results"]) == 4
+    assert api_run_data["outputs"]["core_surface_delta_c"] <= 5
 
     simulate_resp = client.post("/api/run", json={"mode": "simulate"})
     assert simulate_resp.status_code == 200
     assert simulate_resp.json()["outputs"]["operation_mode"] == "simulate"
+
+    report_pdf_resp = client.post(
+        "/api/run/report",
+        json={
+            "mode": "optimize",
+            "billet": {"width_m": 0.15, "thickness_m": 0.12, "length_m": 6, "density": 7850, "specific_heat": 690, "conductivity": 38, "emissivity": 0.82},
+            "process": {"entry_temp_c": 30, "target_exit_temp_c": 920, "max_core_surface_delta_c": 5, "max_rise_rate_c_per_min": 45, "step_length_m": 0.2, "step_cycle_s": 70},
+            "zones": [
+                {"name": "preheat", "length_m": 20, "furnace_temp_c": 1100, "heat_transfer_coeff": 210},
+                {"name": "heating_1", "length_m": 20, "furnace_temp_c": 1280, "heat_transfer_coeff": 250},
+                {"name": "heating_2", "length_m": 18, "furnace_temp_c": 1380, "heat_transfer_coeff": 260},
+                {"name": "soaking", "length_m": 16, "furnace_temp_c": 1320, "heat_transfer_coeff": 220},
+            ],
+        },
+    )
+    assert report_pdf_resp.status_code == 200
+    assert report_pdf_resp.headers["content-type"] == "application/pdf"
+    assert report_pdf_resp.content.startswith(b"%PDF")
+    assert b"/Image" in report_pdf_resp.content
+    assert len(report_pdf_resp.content) > 20000
 
     feedback_resp = client.get("/feedback")
     assert feedback_resp.status_code == 200

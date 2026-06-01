@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 from datetime import datetime
+from io import BytesIO
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, status
@@ -8,6 +9,18 @@ from fastapi.responses import FileResponse
 from sqlalchemy import inspect
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from starlette.responses import Response
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.units import mm
+from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+from reportlab.pdfbase import pdfmetrics
+from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
 from app.db import Base, engine, get_db
 from app.ai_service import get_ai_provider
@@ -585,6 +598,22 @@ def step_furnace_level2_page() -> str:
 
 @app.post("/api/run")
 def run_step_furnace_level2(payload: dict) -> dict:
+    return run_step_furnace_level2_payload(payload)
+
+
+@app.post("/api/run/report")
+def run_step_furnace_level2_report(payload: dict) -> Response:
+    result = run_step_furnace_level2_payload(payload)
+    pdf_bytes = build_step_furnace_level2_pdf(payload, result.get("outputs") or {})
+    filename = "walking_beam_level2_offline_report.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+def run_step_furnace_level2_payload(payload: dict) -> dict:
     mode = str(payload.get("mode", "optimize"))
     model_payload = {
         "billet": payload.get("billet") or {},
@@ -605,6 +634,162 @@ def run_step_furnace_level2(payload: dict) -> dict:
     if result.get("status") != "success":
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=result)
     return result
+
+
+def build_step_furnace_level2_pdf(input_payload: dict, outputs: dict) -> bytes:
+    buffer = BytesIO()
+    pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        rightMargin=18 * mm,
+        leftMargin=18 * mm,
+        topMargin=16 * mm,
+        bottomMargin=16 * mm,
+        title="梁式步进炉二级离线模型计算报告",
+    )
+    styles = getSampleStyleSheet()
+    normal = ParagraphStyle("ChineseNormal", parent=styles["Normal"], fontName="STSong-Light", fontSize=10, leading=15)
+    title = ParagraphStyle("ChineseTitle", parent=styles["Title"], fontName="STSong-Light", fontSize=18, leading=24, alignment=1)
+    heading = ParagraphStyle("ChineseHeading", parent=styles["Heading2"], fontName="STSong-Light", fontSize=13, leading=18, spaceBefore=8)
+    story = [Paragraph("梁式步进炉二级离线模型计算报告", title), Spacer(1, 8)]
+    story.append(Paragraph(f"生成时间：{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC", normal))
+    story.append(Paragraph(f"计算模式：{'离线优化' if outputs.get('operation_mode') == 'optimize' else '离线仿真'}", normal))
+    story.append(Paragraph(f"程序入口：{outputs.get('file_name', 'walking_beam_level2_offline.py')}", normal))
+    story.append(Spacer(1, 8))
+
+    temps = outputs.get("exit_temperatures") or {}
+    summary_rows = [
+        ["指标", "数值"],
+        ["模型名称", outputs.get("model_name", "步进炉二级计算离线模型")],
+        ["炉型", outputs.get("furnace_type", "梁式步进炉")],
+        ["综合目标值", outputs.get("objective_value", "-")],
+        ["出炉平均温度 C", temps.get("average_temp_c", "-")],
+        ["表面温度 C", temps.get("surface_temp_c", "-")],
+        ["心部温度 C", temps.get("core_temp_c", "-")],
+        ["目标偏差 C", outputs.get("target_deviation_c", "-")],
+        ["表里温差 C", outputs.get("core_surface_delta_c", "-")],
+        ["最大升温速率 C/min", outputs.get("max_rise_rate_c_per_min", "-")],
+        ["能耗代理项", outputs.get("energy_proxy", "-")],
+        ["氧化烧损代理项", outputs.get("oxidation_proxy", "-")],
+    ]
+    story.append(Paragraph("一、最终结果", heading))
+    story.append(build_pdf_table(summary_rows, [60 * mm, 90 * mm]))
+
+    billet = input_payload.get("billet") or {}
+    process = input_payload.get("process") or {}
+    input_rows = [["输入项", "数值"]]
+    for key in ["width_m", "thickness_m", "length_m", "density", "specific_heat", "conductivity", "emissivity"]:
+        input_rows.append([key, billet.get(key, "-")])
+    for key in ["entry_temp_c", "target_exit_temp_c", "max_core_surface_delta_c", "max_rise_rate_c_per_min", "step_length_m", "step_cycle_s"]:
+        input_rows.append([key, process.get(key, "-")])
+    story.append(Paragraph("二、输入参数", heading))
+    story.append(build_pdf_table(input_rows, [70 * mm, 80 * mm]))
+
+    story.append(Paragraph("三、炉段参数", heading))
+    zone_rows = [["炉段", "长度 m", "设定温度 C", "换热系数 W/(m²·K)"]]
+    for zone in input_payload.get("zones") or []:
+        zone_rows.append([zone.get("name", "-"), zone.get("length_m", "-"), zone.get("furnace_temp_c", "-"), zone.get("heat_transfer_coeff", "-")])
+    story.append(build_pdf_table(zone_rows, [42 * mm, 28 * mm, 36 * mm, 45 * mm]))
+
+    story.append(Paragraph("四、计算过程", heading))
+    process_rows = [["炉段", "停留时间 s", "炉温 C", "表面 C", "心部 C", "平均 C", "升温速率 C/min"]]
+    for zone in outputs.get("zone_results") or []:
+        process_rows.append([
+            zone.get("zone_name", "-"),
+            zone.get("residence_time_s", "-"),
+            zone.get("furnace_setpoint_c", "-"),
+            zone.get("surface_temp_c", "-"),
+            zone.get("core_temp_c", "-"),
+            zone.get("average_temp_c", "-"),
+            zone.get("temp_rise_rate_c_per_min", "-"),
+        ])
+    story.append(build_pdf_table(process_rows, [28 * mm, 25 * mm, 22 * mm, 22 * mm, 22 * mm, 22 * mm, 30 * mm], font_size=8))
+
+    profile_image = build_profile_chart_image(outputs)
+    heatmap_image = build_heatmap_chart_image(outputs)
+    story.append(Paragraph("五、可视化结果", heading))
+    story.append(Paragraph("分段温升曲线", normal))
+    story.append(Image(profile_image, width=160 * mm, height=70 * mm))
+    story.append(Spacer(1, 6))
+    story.append(Paragraph("厚度方向温度云图", normal))
+    story.append(Image(heatmap_image, width=160 * mm, height=70 * mm))
+
+    story.append(Paragraph("六、优化结论", heading))
+    setpoints = outputs.get("optimized_setpoints_c") or {}
+    conclusion = "；".join([f"{name}：{value} C" for name, value in setpoints.items()]) or "未生成炉温设定值"
+    story.append(Paragraph(f"优化炉温设定值：{conclusion}。", normal))
+    story.append(Paragraph("本报告由二级离线模型接口自动生成，适用于测试版工况复核和计算结果归档。", normal))
+    doc.build(story)
+    return buffer.getvalue()
+
+
+def build_profile_chart_image(outputs: dict) -> BytesIO:
+    zones = outputs.get("zone_results") or []
+    labels = [str(zone.get("zone_name", "-")) for zone in zones]
+    values = [float(zone.get("average_temp_c") or 0) for zone in zones]
+    fig, ax = plt.subplots(figsize=(7.2, 3.1), dpi=160)
+    ax.plot(labels, values, marker="o", linewidth=2.5, color="#2563eb", markerfacecolor="#22c55e")
+    ax.fill_between(labels, values, color="#bfdbfe", alpha=0.35)
+    ax.set_title("Zone Temperature Profile", fontsize=12)
+    ax.set_ylabel("Average temperature C")
+    ax.grid(True, axis="y", alpha=0.28)
+    for index, value in enumerate(values):
+        ax.text(index, value + 20, f"{value:g}", ha="center", fontsize=8)
+    ax.set_ylim(0, max([1300, *values]) * 1.08)
+    fig.tight_layout()
+    image = BytesIO()
+    fig.savefig(image, format="png", bbox_inches="tight")
+    plt.close(fig)
+    image.seek(0)
+    return image
+
+
+def build_heatmap_chart_image(outputs: dict) -> BytesIO:
+    temps = outputs.get("exit_temperatures") or {}
+    surface = float(temps.get("surface_temp_c") or 0)
+    core = float(temps.get("core_temp_c") or 0)
+    rows = 18
+    cols = 32
+    matrix = []
+    for row in range(rows):
+        ratio = row / max(rows - 1, 1)
+        temp = surface * (1 - ratio) + core * ratio
+        matrix.append([temp for _ in range(cols)])
+    fig, ax = plt.subplots(figsize=(7.2, 3.1), dpi=160)
+    image = ax.imshow(matrix, cmap="turbo", aspect="auto", vmin=min(surface, core, 800), vmax=max(surface, core, 1300))
+    ax.set_title("Thickness Temperature Heatmap", fontsize=12)
+    ax.set_xlabel("Billet length direction")
+    ax.set_ylabel("Thickness direction")
+    ax.set_yticks([0, rows - 1])
+    ax.set_yticklabels([f"Surface {surface:g} C", f"Core {core:g} C"])
+    ax.set_xticks([])
+    fig.colorbar(image, ax=ax, fraction=0.035, pad=0.02, label="Temperature C")
+    fig.tight_layout()
+    buffer = BytesIO()
+    fig.savefig(buffer, format="png", bbox_inches="tight")
+    plt.close(fig)
+    buffer.seek(0)
+    return buffer
+
+
+def build_pdf_table(rows: list[list], widths: list[float], font_size: int = 9) -> Table:
+    table = Table(rows, colWidths=widths, repeatRows=1)
+    table.setStyle(
+        TableStyle(
+            [
+                ("FONTNAME", (0, 0), (-1, -1), "STSong-Light"),
+                ("FONTSIZE", (0, 0), (-1, -1), font_size),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#dbeafe")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#0f172a")),
+                ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#94a3b8")),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 5),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+            ]
+        )
+    )
+    return table
 
 
 @app.get("/entry", response_class=HTMLResponse)
@@ -641,6 +826,7 @@ def _step_furnace_level2_page_html() -> str:
       .info-card, .card { padding: 18px; }
       .section-label { margin: 0 0 10px; color: var(--accent); font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; }
       .workbench { display: grid; grid-template-columns: minmax(360px, 0.92fr) minmax(0, 1.08fr); gap: 18px; margin-top: 18px; align-items: start; }
+      .analysis-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(360px, 0.56fr); gap: 18px; margin-top: 18px; align-items: start; }
       .stack { display: grid; gap: 18px; }
       .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
       .field { display: grid; gap: 6px; }
@@ -659,10 +845,13 @@ def _step_furnace_level2_page_html() -> str:
       th { color: #cbd5e1; }
       .process-list { display: grid; gap: 10px; }
       .process-item { border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; background: rgba(2, 8, 23, 0.24); }
+      .comparison-table-wrap { overflow-x: auto; }
+      .comparison-table th, .comparison-table td { min-width: 106px; vertical-align: top; }
+      .comparison-table .wide-cell { min-width: 180px; }
       .code { white-space: pre-wrap; word-break: break-word; font-family: monospace; font-size: 12px; color: #cbd5e1; background: rgba(2, 8, 23, 0.36); border: 1px solid var(--line); border-radius: 14px; padding: 12px; }
       .ok { color: var(--accent-2); }
       .danger { color: var(--danger); }
-      @media (max-width: 1100px) { .workbench, .info-grid, .chart-grid { grid-template-columns: 1fr; } }
+      @media (max-width: 1100px) { .workbench, .analysis-layout, .info-grid, .chart-grid { grid-template-columns: 1fr; } }
       @media (max-width: 720px) { .form-grid, .result-grid { grid-template-columns: 1fr; } }
     </style>
   </head>
@@ -671,68 +860,78 @@ def _step_furnace_level2_page_html() -> str:
       <section class="hero">
         <h1>梁式步进炉二级离线模型</h1>
         <p>左侧填写工艺参数，右侧查看离线仿真和炉温优化结果。</p>
-        <div class="actions"><a class="btn" href="/home">返回主菜单</a><a class="btn" href="/compute">计算模块</a><button class="btn btn-primary" onclick="runModel('optimize')">运行离线优化</button><button class="btn" onclick="runModel('simulate')">仅仿真</button></div>
+        <div class="actions"><a class="btn" href="/home">返回主菜单</a><a class="btn" href="/compute">计算模块</a><button class="btn btn-primary" onclick="runModel('optimize')">运行离线优化</button><button class="btn" onclick="runModel('simulate')">仅仿真</button><button class="btn" onclick="downloadReport()">生成 PDF 报告</button><button class="btn" onclick="toggleComparisonPanel()">5次计算对比</button></div>
         <div class="info-grid">
           <div class="info-card"><div class="section-label">程序入口</div><strong>walking_beam_level2_offline.py</strong></div>
           <div class="info-card"><div class="section-label">服务接口</div><strong>POST /api/run</strong></div>
         </div>
       </section>
 
-      <section class="workbench">
-        <aside class="stack">
-          <article class="card">
-            <div class="section-label">输入参数</div>
-            <h2>钢坯参数</h2>
-            <div class="form-grid">
-              <div class="field"><label>钢坯宽度 m</label><input class="input" id="width_m" type="number" step="0.01" value="0.15" /></div>
-              <div class="field"><label>钢坯厚度 m</label><input class="input" id="thickness_m" type="number" step="0.01" value="0.12" /></div>
-              <div class="field"><label>钢坯长度 m</label><input class="input" id="length_m" type="number" step="0.1" value="6" /></div>
-              <div class="field"><label>密度 kg/m3</label><input class="input" id="density" type="number" step="1" value="7850" /></div>
-              <div class="field"><label>比热 J/(kg*K)</label><input class="input" id="specific_heat" type="number" step="1" value="690" /></div>
-              <div class="field"><label>导热系数 W/(m*K)</label><input class="input" id="conductivity" type="number" step="1" value="38" /></div>
-              <div class="field"><label>黑度</label><input class="input" id="emissivity" type="number" step="0.01" value="0.82" /></div>
-              <div class="field"><label>入炉温度 C</label><input class="input" id="entry_temp_c" type="number" step="1" value="30" /></div>
-              <div class="field"><label>目标出炉温度 C</label><input class="input" id="target_exit_temp_c" type="number" step="1" value="920" /></div>
-              <div class="field"><label>最大表里温差 C</label><input class="input" id="max_core_surface_delta_c" type="number" step="1" value="500" /></div>
-              <div class="field"><label>最大升温速率 C/min</label><input class="input" id="max_rise_rate_c_per_min" type="number" step="1" value="45" /></div>
-            </div>
-          </article>
-          <article class="card">
-            <h2>步进参数</h2>
-            <div class="form-grid">
-              <div class="field"><label>步距 m</label><input class="input" id="step_length_m" type="number" step="0.1" value="0.2" /></div>
-              <div class="field"><label>步进周期 s</label><input class="input" id="step_cycle_s" type="number" step="1" value="70" /></div>
-            </div>
-          </article>
-          <article class="card">
-            <h2>炉温分区</h2>
-            <div id="zone-form"></div>
-          </article>
-        </aside>
+      <section class="analysis-layout">
+        <div>
+          <section class="workbench">
+            <aside class="stack">
+              <article class="card">
+                <div class="section-label">输入参数</div>
+                <h2>钢坯参数</h2>
+                <div class="form-grid">
+                  <div class="field"><label>钢坯宽度 m</label><input class="input" id="width_m" type="number" step="0.01" value="0.15" /></div>
+                  <div class="field"><label>钢坯厚度 m</label><input class="input" id="thickness_m" type="number" step="0.01" value="0.12" /></div>
+                  <div class="field"><label>钢坯长度 m</label><input class="input" id="length_m" type="number" step="0.1" value="6" /></div>
+                  <div class="field"><label>密度 kg/m3</label><input class="input" id="density" type="number" step="1" value="7850" /></div>
+                  <div class="field"><label>比热 J/(kg*K)</label><input class="input" id="specific_heat" type="number" step="1" value="690" /></div>
+                  <div class="field"><label>导热系数 W/(m*K)</label><input class="input" id="conductivity" type="number" step="1" value="38" /></div>
+                  <div class="field"><label>黑度</label><input class="input" id="emissivity" type="number" step="0.01" value="0.82" /></div>
+                  <div class="field"><label>入炉温度 C</label><input class="input" id="entry_temp_c" type="number" step="1" value="30" /></div>
+                  <div class="field"><label>目标出炉温度 C</label><input class="input" id="target_exit_temp_c" type="number" step="1" value="920" /></div>
+                  <div class="field"><label>最大表里温差 C</label><input class="input" id="max_core_surface_delta_c" type="number" step="1" value="5" /></div>
+                  <div class="field"><label>最大升温速率 C/min</label><input class="input" id="max_rise_rate_c_per_min" type="number" step="1" value="45" /></div>
+                </div>
+              </article>
+              <article class="card">
+                <h2>步进参数</h2>
+                <div class="form-grid">
+                  <div class="field"><label>步距 m</label><input class="input" id="step_length_m" type="number" step="0.1" value="0.2" /></div>
+                  <div class="field"><label>步进周期 s</label><input class="input" id="step_cycle_s" type="number" step="1" value="70" /></div>
+                </div>
+              </article>
+              <article class="card">
+                <h2>炉温分区</h2>
+                <div id="zone-form"></div>
+              </article>
+            </aside>
 
-        <section class="stack">
-          <article class="card">
-            <div class="section-label">计算结果</div>
-            <h2>最终结果</h2>
-            <div id="run-message" class="muted">页面打开后自动运行默认离线优化工况。</div>
-            <div class="result-grid" id="result-grid" style="margin-top:14px;"></div>
-          </article>
-          <article class="card">
-            <h2>计算过程</h2>
-            <div id="process-panel" class="process-list"><div class="muted">暂无计算过程。</div></div>
-          </article>
-          <article class="card">
-            <h2>可视化结果</h2>
-            <div class="chart-grid">
-              <div class="chart-box"><div class="section-label">分段温升曲线</div><svg id="profile-chart" viewBox="0 0 520 240" role="img"></svg></div>
-              <div class="chart-box"><div class="section-label">厚度方向温度云图</div><svg id="heatmap-chart" viewBox="0 0 520 240" role="img"></svg></div>
-            </div>
-          </article>
-          <article class="card">
-            <h2>结果参数表</h2>
-            <div id="result-table" class="muted">计算完成后显示分段结果。</div>
-          </article>
-        </section>
+            <section class="stack">
+              <article class="card">
+                <div class="section-label">计算结果</div>
+                <h2>最终结果</h2>
+                <div id="run-message" class="muted">页面打开后自动运行默认离线优化工况。</div>
+                <div class="result-grid" id="result-grid" style="margin-top:14px;"></div>
+              </article>
+              <article class="card">
+                <h2>计算过程</h2>
+                <div id="process-panel" class="process-list"><div class="muted">暂无计算过程。</div></div>
+              </article>
+              <article class="card">
+                <h2>可视化结果</h2>
+                <div class="chart-grid">
+                  <div class="chart-box"><div class="section-label">分段温升曲线</div><svg id="profile-chart" viewBox="0 0 520 240" role="img"></svg></div>
+                  <div class="chart-box"><div class="section-label">厚度方向温度云图</div><svg id="heatmap-chart" viewBox="0 0 520 240" role="img"></svg></div>
+                </div>
+              </article>
+              <article class="card">
+                <h2>结果参数表</h2>
+                <div id="result-table" class="muted">计算完成后显示分段结果。</div>
+              </article>
+            </section>
+          </section>
+        </div>
+        <aside class="card" id="comparison-panel" style="display:none;">
+          <div class="section-label">对比界面</div>
+          <h2>最近 5 次计算对比</h2>
+          <p class="muted">与“仅仿真 / 运行离线优化”计算界面并列展示，保留当前页面会话内最近 5 次原始参数和计算结果。</p>
+          <div id="comparison-table" class="comparison-table-wrap muted">暂无对比记录。</div>
+        </aside>
       </section>
     </main>
     <script>
@@ -742,6 +941,9 @@ def _step_furnace_level2_page_html() -> str:
         { key: 'heating_2', name: 'heating_2', length: 18, temp: 1380, htc: 260 },
         { key: 'soaking', name: 'soaking', length: 16, temp: 1320, htc: 220 }
       ];
+      let currentRunMode = 'optimize';
+      const comparisonRuns = [];
+      let comparisonVisible = false;
       function num(id) { return Number(document.getElementById(id).value || 0); }
       function escapeHtml(value) { return String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;'); }
       function renderZoneForm() {
@@ -797,6 +999,40 @@ def _step_furnace_level2_page_html() -> str:
       function renderResultTable(zones) {
         document.getElementById('result-table').innerHTML = `<table><thead><tr><th>炉段</th><th>停留时间 s</th><th>炉温 C</th><th>表面 C</th><th>心部 C</th><th>平均 C</th><th>升温速率 C/min</th></tr></thead><tbody>${zones.map((zone) => `<tr><td>${escapeHtml(zone.zone_name)}</td><td>${escapeHtml(zone.residence_time_s)}</td><td>${escapeHtml(zone.furnace_setpoint_c)}</td><td>${escapeHtml(zone.surface_temp_c)}</td><td>${escapeHtml(zone.core_temp_c)}</td><td>${escapeHtml(zone.average_temp_c)}</td><td>${escapeHtml(zone.temp_rise_rate_c_per_min)}</td></tr>`).join('')}</tbody></table>`;
       }
+      function formatZoneSetpoints(outputs) {
+        return Object.entries(outputs.optimized_setpoints_c || {}).map(([name, value]) => `${name}: ${value}`).join('<br>') || '-';
+      }
+      function formatInputSummary(payload) {
+        const billet = payload.billet || {};
+        const process = payload.process || {};
+        return [
+          `厚度: ${billet.thickness_m} m`,
+          `目标: ${process.target_exit_temp_c} C`,
+          `步距: ${process.step_length_m} m`,
+          `周期: ${process.step_cycle_s} s`,
+          `最大温差: ${process.max_core_surface_delta_c} C`,
+          `升温速率: ${process.max_rise_rate_c_per_min} C/min`
+        ].join('<br>');
+      }
+      function formatZoneInputs(payload) {
+        return (payload.zones || []).map((zone) => `${escapeHtml(zone.name)}: ${escapeHtml(zone.length_m)} m / ${escapeHtml(zone.furnace_temp_c)} C / ${escapeHtml(zone.heat_transfer_coeff)}`).join('<br>') || '-';
+      }
+      function rememberComparison(payload, outputs) {
+        comparisonRuns.unshift({ payload: JSON.parse(JSON.stringify(payload)), outputs: JSON.parse(JSON.stringify(outputs)), createdAt: new Date() });
+        comparisonRuns.splice(5);
+        renderComparisonTable();
+      }
+      function renderComparisonTable() {
+        const target = document.getElementById('comparison-table');
+        if (!comparisonRuns.length) { target.className = 'comparison-table-wrap muted'; target.textContent = '暂无对比记录。'; return; }
+        target.className = 'comparison-table-wrap';
+        target.innerHTML = `<table class="comparison-table"><thead><tr><th>序号</th><th>时间</th><th>模式</th><th class="wide-cell">原始参数</th><th class="wide-cell">炉段原始参数</th><th>出炉平均 C</th><th>目标偏差 C</th><th>表里温差 C</th><th>最大升温速率</th><th>能耗代理</th><th>氧化代理</th><th class="wide-cell">炉温结果</th></tr></thead><tbody>${comparisonRuns.map((run, index) => { const outputs = run.outputs || {}; const temps = outputs.exit_temperatures || {}; return `<tr><td>${index + 1}</td><td>${escapeHtml(run.createdAt.toLocaleTimeString())}</td><td>${outputs.operation_mode === 'optimize' ? '离线优化' : '离线仿真'}</td><td>${formatInputSummary(run.payload)}</td><td>${formatZoneInputs(run.payload)}</td><td>${escapeHtml(temps.average_temp_c ?? '-')}</td><td>${escapeHtml(outputs.target_deviation_c ?? '-')}</td><td>${escapeHtml(outputs.core_surface_delta_c ?? '-')}</td><td>${escapeHtml(outputs.max_rise_rate_c_per_min ?? '-')}</td><td>${escapeHtml(outputs.energy_proxy ?? '-')}</td><td>${escapeHtml(outputs.oxidation_proxy ?? '-')}</td><td>${formatZoneSetpoints(outputs)}</td></tr>`; }).join('')}</tbody></table>`;
+      }
+      function toggleComparisonPanel() {
+        comparisonVisible = !comparisonVisible;
+        document.getElementById('comparison-panel').style.display = comparisonVisible ? 'block' : 'none';
+        if (comparisonVisible) { renderComparisonTable(); }
+      }
       function renderResults(outputs) {
         const temps = outputs.exit_temperatures || {};
         const zones = outputs.zone_results || [];
@@ -821,20 +1057,42 @@ def _step_furnace_level2_page_html() -> str:
         renderResultTable(zones);
       }
       async function runModel(mode = 'optimize') {
+        currentRunMode = mode;
         renderInputState();
+        const payload = buildPayload(mode);
         const message = document.getElementById('run-message');
         message.className = 'muted';
         message.textContent = mode === 'optimize' ? '正在执行梁式步进炉二级离线优化...' : '正在执行梁式步进炉离线仿真...';
-        const res = await fetch('/api/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(buildPayload(mode)) });
+        const res = await fetch('/api/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
         if (!res.ok) { message.className = 'danger'; message.textContent = `计算失败: ${res.status}`; return; }
         const data = await res.json();
         renderResults(data.outputs || {});
+        rememberComparison(payload, data.outputs || {});
         message.className = 'ok';
         message.textContent = `计算完成，已调用 ${data.outputs.file_name}`;
+      }
+      async function downloadReport() {
+        const message = document.getElementById('run-message');
+        message.className = 'muted';
+        message.textContent = '正在生成 PDF 计算报告...';
+        const res = await fetch('/api/run/report', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(buildPayload(currentRunMode)) });
+        if (!res.ok) { message.className = 'danger'; message.textContent = `报告生成失败: ${res.status}`; return; }
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = 'walking_beam_level2_offline_report.pdf';
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+        message.className = 'ok';
+        message.textContent = 'PDF 计算报告已生成';
       }
       renderZoneForm();
       document.querySelectorAll('.input').forEach((input) => input.addEventListener('input', renderInputState));
       renderInputState();
+      renderComparisonTable();
       runModel('optimize');
     </script>
   </body>
