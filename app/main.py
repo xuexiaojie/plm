@@ -575,7 +575,7 @@ def _home_page_html() -> str:
 
 @app.get("/compute", response_class=HTMLResponse)
 def compute_page() -> str:
-    return _compute_page_html()
+    return _home_page_html()
 
 
 @app.get("/step-furnace-level2", response_class=HTMLResponse)
@@ -650,12 +650,19 @@ def _step_furnace_level2_page_html() -> str:
       .metric { border: 1px solid var(--line); border-radius: 16px; padding: 14px; background: var(--panel-soft); min-height: 86px; }
       .metric-title { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
       .metric-value { font-size: 20px; font-weight: bold; word-break: break-word; }
+      .zone-card { border: 1px solid var(--line); border-radius: 16px; padding: 14px; background: var(--panel-soft); margin-top: 12px; }
+      .chart-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+      .chart-box { min-height: 280px; border: 1px solid var(--line); border-radius: 16px; background: rgba(2, 8, 23, 0.24); padding: 12px; }
+      svg { width: 100%; height: 240px; display: block; }
+      table { width: 100%; border-collapse: collapse; font-size: 13px; }
+      th, td { border-bottom: 1px solid var(--line); padding: 9px 8px; text-align: left; }
+      th { color: #cbd5e1; }
       .process-list { display: grid; gap: 10px; }
       .process-item { border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; background: rgba(2, 8, 23, 0.24); }
       .code { white-space: pre-wrap; word-break: break-word; font-family: monospace; font-size: 12px; color: #cbd5e1; background: rgba(2, 8, 23, 0.36); border: 1px solid var(--line); border-radius: 14px; padding: 12px; }
       .ok { color: var(--accent-2); }
       .danger { color: var(--danger); }
-      @media (max-width: 1100px) { .workbench, .info-grid { grid-template-columns: 1fr; } }
+      @media (max-width: 1100px) { .workbench, .info-grid, .chart-grid { grid-template-columns: 1fr; } }
       @media (max-width: 720px) { .form-grid, .result-grid { grid-template-columns: 1fr; } }
     </style>
   </head>
@@ -699,12 +706,7 @@ def _step_furnace_level2_page_html() -> str:
           </article>
           <article class="card">
             <h2>炉温分区</h2>
-            <div class="form-grid">
-              <div class="field"><label>预热段设定 C</label><input class="input" id="zone_0_temp" type="number" step="1" value="870" /></div>
-              <div class="field"><label>加热一段设定 C</label><input class="input" id="zone_1_temp" type="number" step="1" value="1130" /></div>
-              <div class="field"><label>加热二段设定 C</label><input class="input" id="zone_2_temp" type="number" step="1" value="1310" /></div>
-              <div class="field"><label>均热段设定 C</label><input class="input" id="zone_3_temp" type="number" step="1" value="1300" /></div>
-            </div>
+            <div id="zone-form"></div>
           </article>
         </aside>
 
@@ -720,6 +722,17 @@ def _step_furnace_level2_page_html() -> str:
             <div id="process-panel" class="process-list"><div class="muted">暂无计算过程。</div></div>
           </article>
           <article class="card">
+            <h2>可视化结果</h2>
+            <div class="chart-grid">
+              <div class="chart-box"><div class="section-label">分段温升曲线</div><svg id="profile-chart" viewBox="0 0 520 240" role="img"></svg></div>
+              <div class="chart-box"><div class="section-label">厚度方向温度云图</div><svg id="heatmap-chart" viewBox="0 0 520 240" role="img"></svg></div>
+            </div>
+          </article>
+          <article class="card">
+            <h2>结果参数表</h2>
+            <div id="result-table" class="muted">计算完成后显示分段结果。</div>
+          </article>
+          <article class="card">
             <h2>输入 JSON</h2>
             <div class="code" id="input-json"></div>
           </article>
@@ -727,11 +740,17 @@ def _step_furnace_level2_page_html() -> str:
       </section>
     </main>
     <script>
-      const zoneNames = ['预热段', '加热一段', '加热二段', '均热段'];
-      const zoneLengths = [8, 8, 9, 7];
-      const zoneHtc = [115, 150, 175, 145];
+      const zoneDefaults = [
+        { key: 'preheat', name: 'preheat', length: 8, temp: 870, htc: 115 },
+        { key: 'heating_1', name: 'heating_1', length: 8, temp: 1130, htc: 150 },
+        { key: 'heating_2', name: 'heating_2', length: 9, temp: 1310, htc: 175 },
+        { key: 'soaking', name: 'soaking', length: 7, temp: 1300, htc: 145 }
+      ];
       function num(id) { return Number(document.getElementById(id).value || 0); }
       function escapeHtml(value) { return String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;'); }
+      function renderZoneForm() {
+        document.getElementById('zone-form').innerHTML = zoneDefaults.map((zone, index) => `<div class="zone-card"><h3>第${index + 1}段: ${escapeHtml(zone.name)}</h3><div class="form-grid"><div class="field"><label>炉段名称</label><input class="input" id="zone_${index}_name" value="${escapeHtml(zone.name)}" /></div><div class="field"><label>炉段长度 m</label><input class="input" id="zone_${index}_length" type="number" step="0.1" value="${zone.length}" /></div><div class="field"><label>设定温度 C</label><input class="input" id="zone_${index}_temp" type="number" step="1" value="${zone.temp}" /></div><div class="field"><label>换热系数 W/(m²·K)</label><input class="input" id="zone_${index}_htc" type="number" step="1" value="${zone.htc}" /></div></div></div>`).join('');
+      }
       function buildPayload() {
         return {
           mode: 'optimize',
@@ -743,13 +762,48 @@ def _step_furnace_level2_page_html() -> str:
             entry_temp_c: num('entry_temp_c'), target_exit_temp_c: num('target_exit_temp_c'), max_core_surface_delta_c: num('max_core_surface_delta_c'),
             max_rise_rate_c_per_min: num('max_rise_rate_c_per_min'), step_length_m: num('step_length_m'), step_cycle_s: num('step_cycle_s')
           },
-          zones: zoneNames.map((name, index) => ({ name, length_m: zoneLengths[index], furnace_temp_c: num(`zone_${index}_temp`), heat_transfer_coeff: zoneHtc[index] }))
+          zones: zoneDefaults.map((zone, index) => ({ name: document.getElementById(`zone_${index}_name`).value || zone.name, length_m: num(`zone_${index}_length`), furnace_temp_c: num(`zone_${index}_temp`), heat_transfer_coeff: num(`zone_${index}_htc`) }))
         };
       }
       function renderInputJson() { document.getElementById('input-json').textContent = JSON.stringify(buildPayload(), null, 2); }
       function renderMetric(title, value) { return `<div class="metric"><div class="metric-title">${escapeHtml(title)}</div><div class="metric-value">${escapeHtml(value)}</div></div>`; }
+      function chartPoint(index, total, value, min, max) {
+        const x = 42 + index * (430 / Math.max(total - 1, 1));
+        const y = 200 - ((value - min) / Math.max(max - min, 1)) * 158;
+        return `${x},${y}`;
+      }
+      function renderProfileChart(zones) {
+        const values = zones.map((zone) => Number(zone.average_temp_c || 0));
+        const min = Math.min(0, ...values);
+        const max = Math.max(1300, ...values);
+        const points = values.map((value, index) => chartPoint(index, values.length, value, min, max)).join(' ');
+        const labels = zones.map((zone, index) => `<text x="${42 + index * (430 / Math.max(zones.length - 1, 1))}" y="226" fill="#94a3b8" font-size="11" text-anchor="middle">${escapeHtml(zone.zone_name)}</text>`).join('');
+        document.getElementById('profile-chart').innerHTML = `<line x1="38" y1="42" x2="38" y2="202" stroke="#334155"/><line x1="38" y1="202" x2="486" y2="202" stroke="#334155"/><polyline points="${points}" fill="none" stroke="#60a5fa" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>${values.map((value, index) => { const [x, y] = chartPoint(index, values.length, value, min, max).split(','); return `<circle cx="${x}" cy="${y}" r="5" fill="#22c55e"/><text x="${x}" y="${Number(y) - 12}" fill="#cbd5e1" font-size="11" text-anchor="middle">${value}</text>`; }).join('')}${labels}`;
+      }
+      function renderHeatmap(outputs) {
+        const temps = outputs.exit_temperatures || {};
+        const surface = Number(temps.surface_temp_c || 0);
+        const core = Number(temps.core_temp_c || 0);
+        const rows = 9;
+        const cols = 16;
+        let cells = '';
+        for (let row = 0; row < rows; row += 1) {
+          for (let col = 0; col < cols; col += 1) {
+            const ratio = row / Math.max(rows - 1, 1);
+            const temp = surface * (1 - ratio) + core * ratio;
+            const heat = Math.max(0, Math.min(1, (temp - 800) / 520));
+            const color = `rgb(${Math.round(54 + heat * 201)}, ${Math.round(88 + heat * 72)}, ${Math.round(130 - heat * 80)})`;
+            cells += `<rect x="${36 + col * 28}" y="${34 + row * 18}" width="26" height="16" rx="3" fill="${color}"/>`;
+          }
+        }
+        document.getElementById('heatmap-chart').innerHTML = `${cells}<text x="36" y="220" fill="#94a3b8" font-size="12">表面 ${surface} C</text><text x="360" y="220" fill="#94a3b8" font-size="12">心部 ${core} C</text>`;
+      }
+      function renderResultTable(zones) {
+        document.getElementById('result-table').innerHTML = `<table><thead><tr><th>炉段</th><th>停留时间 s</th><th>炉温 C</th><th>表面 C</th><th>心部 C</th><th>平均 C</th><th>升温速率 C/min</th></tr></thead><tbody>${zones.map((zone) => `<tr><td>${escapeHtml(zone.zone_name)}</td><td>${escapeHtml(zone.residence_time_s)}</td><td>${escapeHtml(zone.furnace_setpoint_c)}</td><td>${escapeHtml(zone.surface_temp_c)}</td><td>${escapeHtml(zone.core_temp_c)}</td><td>${escapeHtml(zone.average_temp_c)}</td><td>${escapeHtml(zone.temp_rise_rate_c_per_min)}</td></tr>`).join('')}</tbody></table>`;
+      }
       function renderResults(outputs) {
         const temps = outputs.exit_temperatures || {};
+        const zones = outputs.zone_results || [];
         const setpoints = Object.values(outputs.optimized_setpoints_c || {}).join(' / ');
         document.getElementById('result-grid').innerHTML = [
           renderMetric('模式', outputs.operation_mode === 'optimize' ? '离线优化' : '离线仿真'),
@@ -765,7 +819,10 @@ def _step_furnace_level2_page_html() -> str:
           renderMetric('氧化烧损代理项', outputs.oxidation_proxy),
           renderMetric('温升曲线偏差项', Math.round(Math.abs(outputs.target_deviation_c || 0) * 1315.34 * 100) / 100)
         ].join('');
-        document.getElementById('process-panel').innerHTML = (outputs.zone_results || []).map((zone) => `<div class="process-item"><strong>${escapeHtml(zone.zone_name)}</strong><div class="muted">停留时间: ${escapeHtml(zone.residence_time_s)} s | 炉温: ${escapeHtml(zone.furnace_setpoint_c)} C</div><div class="muted">出口表面: ${escapeHtml(zone.surface_temp_c)} C | 心部: ${escapeHtml(zone.core_temp_c)} C | 平均: ${escapeHtml(zone.average_temp_c)} C</div></div>`).join('');
+        document.getElementById('process-panel').innerHTML = zones.map((zone) => `<div class="process-item"><strong>${escapeHtml(zone.zone_name)}</strong><div class="muted">停留时间: ${escapeHtml(zone.residence_time_s)} s | 炉温: ${escapeHtml(zone.furnace_setpoint_c)} C</div><div class="muted">出口表面: ${escapeHtml(zone.surface_temp_c)} C | 心部: ${escapeHtml(zone.core_temp_c)} C | 平均: ${escapeHtml(zone.average_temp_c)} C</div></div>`).join('');
+        renderProfileChart(zones);
+        renderHeatmap(outputs);
+        renderResultTable(zones);
       }
       async function runModel() {
         renderInputJson();
@@ -779,6 +836,7 @@ def _step_furnace_level2_page_html() -> str:
         message.className = 'ok';
         message.textContent = `计算完成，已调用 ${data.outputs.file_name}`;
       }
+      renderZoneForm();
       document.querySelectorAll('.input').forEach((input) => input.addEventListener('input', renderInputJson));
       renderInputJson();
       runModel();

@@ -74,8 +74,13 @@ def test_login_and_home_menu_pages() -> None:
     assert "梁式步进炉二级离线模型" in level2_resp.text
     assert "POST /api/run" in level2_resp.text
     assert "钢坯参数" in level2_resp.text
+    assert "炉段参数" in level2_resp.text or "炉温分区" in level2_resp.text
     assert "计算结果" in level2_resp.text
     assert "计算过程" in level2_resp.text
+    assert "可视化结果" in level2_resp.text
+    assert "分段温升曲线" in level2_resp.text
+    assert "厚度方向温度云图" in level2_resp.text
+    assert "结果参数表" in level2_resp.text
 
     api_run_resp = client.post(
         "/api/run",
@@ -104,8 +109,9 @@ def test_login_and_home_menu_pages() -> None:
 
     compute_resp = client.get("/compute")
     assert compute_resp.status_code == 200
-    assert "计算模块入口" in compute_resp.text
-    assert "所有计算功能都直接进入对应计算模块" in compute_resp.text
+    assert "主功能菜单首页" in compute_resp.text
+    assert "步进炉下级功能按钮" in compute_resp.text
+    assert "二级计算离线模型" in compute_resp.text
     assert "/step-furnace-level2" in compute_resp.text
     assert "二级离线模型挂靠" not in compute_resp.text
     assert "树结构区" not in compute_resp.text
