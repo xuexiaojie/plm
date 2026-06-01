@@ -670,8 +670,8 @@ def _step_furnace_level2_page_html() -> str:
     <main class="wrap">
       <section class="hero">
         <h1>梁式步进炉二级离线模型</h1>
-        <p>左侧编辑工艺输入 JSON，右侧查看离线仿真或优化结果。</p>
-        <div class="actions"><a class="btn" href="/home">返回主菜单</a><a class="btn" href="/compute">计算模块</a><button class="btn btn-primary" onclick="runModel()">开始计算</button></div>
+        <p>左侧填写工艺参数，右侧查看离线仿真和炉温优化结果。</p>
+        <div class="actions"><a class="btn" href="/home">返回主菜单</a><a class="btn" href="/compute">计算模块</a><button class="btn btn-primary" onclick="runModel('optimize')">运行离线优化</button><button class="btn" onclick="runModel('simulate')">仅仿真</button></div>
         <div class="info-grid">
           <div class="info-card"><div class="section-label">程序入口</div><strong>walking_beam_level2_offline.py</strong></div>
           <div class="info-card"><div class="section-label">服务接口</div><strong>POST /api/run</strong></div>
@@ -685,23 +685,23 @@ def _step_furnace_level2_page_html() -> str:
             <h2>钢坯参数</h2>
             <div class="form-grid">
               <div class="field"><label>钢坯宽度 m</label><input class="input" id="width_m" type="number" step="0.01" value="0.15" /></div>
-              <div class="field"><label>钢坯厚度 m</label><input class="input" id="thickness_m" type="number" step="0.01" value="0.15" /></div>
+              <div class="field"><label>钢坯厚度 m</label><input class="input" id="thickness_m" type="number" step="0.01" value="0.12" /></div>
               <div class="field"><label>钢坯长度 m</label><input class="input" id="length_m" type="number" step="0.1" value="6" /></div>
               <div class="field"><label>密度 kg/m3</label><input class="input" id="density" type="number" step="1" value="7850" /></div>
               <div class="field"><label>比热 J/(kg*K)</label><input class="input" id="specific_heat" type="number" step="1" value="690" /></div>
-              <div class="field"><label>导热系数 W/(m*K)</label><input class="input" id="conductivity" type="number" step="1" value="34" /></div>
+              <div class="field"><label>导热系数 W/(m*K)</label><input class="input" id="conductivity" type="number" step="1" value="38" /></div>
               <div class="field"><label>黑度</label><input class="input" id="emissivity" type="number" step="0.01" value="0.82" /></div>
               <div class="field"><label>入炉温度 C</label><input class="input" id="entry_temp_c" type="number" step="1" value="30" /></div>
-              <div class="field"><label>目标出炉温度 C</label><input class="input" id="target_exit_temp_c" type="number" step="1" value="1180" /></div>
-              <div class="field"><label>最大表里温差 C</label><input class="input" id="max_core_surface_delta_c" type="number" step="1" value="30" /></div>
-              <div class="field"><label>最大升温速率 C/min</label><input class="input" id="max_rise_rate_c_per_min" type="number" step="1" value="18" /></div>
+              <div class="field"><label>目标出炉温度 C</label><input class="input" id="target_exit_temp_c" type="number" step="1" value="920" /></div>
+              <div class="field"><label>最大表里温差 C</label><input class="input" id="max_core_surface_delta_c" type="number" step="1" value="500" /></div>
+              <div class="field"><label>最大升温速率 C/min</label><input class="input" id="max_rise_rate_c_per_min" type="number" step="1" value="45" /></div>
             </div>
           </article>
           <article class="card">
             <h2>步进参数</h2>
             <div class="form-grid">
-              <div class="field"><label>步距 m</label><input class="input" id="step_length_m" type="number" step="0.1" value="0.5" /></div>
-              <div class="field"><label>步进周期 s</label><input class="input" id="step_cycle_s" type="number" step="1" value="45" /></div>
+              <div class="field"><label>步距 m</label><input class="input" id="step_length_m" type="number" step="0.1" value="0.2" /></div>
+              <div class="field"><label>步进周期 s</label><input class="input" id="step_cycle_s" type="number" step="1" value="70" /></div>
             </div>
           </article>
           <article class="card">
@@ -714,7 +714,7 @@ def _step_furnace_level2_page_html() -> str:
           <article class="card">
             <div class="section-label">计算结果</div>
             <h2>最终结果</h2>
-            <div id="run-message" class="muted">页面打开后已准备默认工况，点击“开始计算”获取结果。</div>
+            <div id="run-message" class="muted">页面打开后自动运行默认离线优化工况。</div>
             <div class="result-grid" id="result-grid" style="margin-top:14px;"></div>
           </article>
           <article class="card">
@@ -732,28 +732,24 @@ def _step_furnace_level2_page_html() -> str:
             <h2>结果参数表</h2>
             <div id="result-table" class="muted">计算完成后显示分段结果。</div>
           </article>
-          <article class="card">
-            <h2>输入 JSON</h2>
-            <div class="code" id="input-json"></div>
-          </article>
         </section>
       </section>
     </main>
     <script>
       const zoneDefaults = [
-        { key: 'preheat', name: 'preheat', length: 8, temp: 870, htc: 115 },
-        { key: 'heating_1', name: 'heating_1', length: 8, temp: 1130, htc: 150 },
-        { key: 'heating_2', name: 'heating_2', length: 9, temp: 1310, htc: 175 },
-        { key: 'soaking', name: 'soaking', length: 7, temp: 1300, htc: 145 }
+        { key: 'preheat', name: 'preheat', length: 20, temp: 1100, htc: 210 },
+        { key: 'heating_1', name: 'heating_1', length: 20, temp: 1280, htc: 250 },
+        { key: 'heating_2', name: 'heating_2', length: 18, temp: 1380, htc: 260 },
+        { key: 'soaking', name: 'soaking', length: 16, temp: 1320, htc: 220 }
       ];
       function num(id) { return Number(document.getElementById(id).value || 0); }
       function escapeHtml(value) { return String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;'); }
       function renderZoneForm() {
         document.getElementById('zone-form').innerHTML = zoneDefaults.map((zone, index) => `<div class="zone-card"><h3>第${index + 1}段: ${escapeHtml(zone.name)}</h3><div class="form-grid"><div class="field"><label>炉段名称</label><input class="input" id="zone_${index}_name" value="${escapeHtml(zone.name)}" /></div><div class="field"><label>炉段长度 m</label><input class="input" id="zone_${index}_length" type="number" step="0.1" value="${zone.length}" /></div><div class="field"><label>设定温度 C</label><input class="input" id="zone_${index}_temp" type="number" step="1" value="${zone.temp}" /></div><div class="field"><label>换热系数 W/(m²·K)</label><input class="input" id="zone_${index}_htc" type="number" step="1" value="${zone.htc}" /></div></div></div>`).join('');
       }
-      function buildPayload() {
+      function buildPayload(mode = 'optimize') {
         return {
-          mode: 'optimize',
+          mode,
           billet: {
             width_m: num('width_m'), thickness_m: num('thickness_m'), length_m: num('length_m'), density: num('density'),
             specific_heat: num('specific_heat'), conductivity: num('conductivity'), emissivity: num('emissivity')
@@ -765,7 +761,7 @@ def _step_furnace_level2_page_html() -> str:
           zones: zoneDefaults.map((zone, index) => ({ name: document.getElementById(`zone_${index}_name`).value || zone.name, length_m: num(`zone_${index}_length`), furnace_temp_c: num(`zone_${index}_temp`), heat_transfer_coeff: num(`zone_${index}_htc`) }))
         };
       }
-      function renderInputJson() { document.getElementById('input-json').textContent = JSON.stringify(buildPayload(), null, 2); }
+      function renderInputState() {}
       function renderMetric(title, value) { return `<div class="metric"><div class="metric-title">${escapeHtml(title)}</div><div class="metric-value">${escapeHtml(value)}</div></div>`; }
       function chartPoint(index, total, value, min, max) {
         const x = 42 + index * (430 / Math.max(total - 1, 1));
@@ -824,12 +820,12 @@ def _step_furnace_level2_page_html() -> str:
         renderHeatmap(outputs);
         renderResultTable(zones);
       }
-      async function runModel() {
-        renderInputJson();
+      async function runModel(mode = 'optimize') {
+        renderInputState();
         const message = document.getElementById('run-message');
         message.className = 'muted';
-        message.textContent = '正在执行梁式步进炉二级离线模型...';
-        const res = await fetch('/api/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(buildPayload()) });
+        message.textContent = mode === 'optimize' ? '正在执行梁式步进炉二级离线优化...' : '正在执行梁式步进炉离线仿真...';
+        const res = await fetch('/api/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(buildPayload(mode)) });
         if (!res.ok) { message.className = 'danger'; message.textContent = `计算失败: ${res.status}`; return; }
         const data = await res.json();
         renderResults(data.outputs || {});
@@ -837,9 +833,9 @@ def _step_furnace_level2_page_html() -> str:
         message.textContent = `计算完成，已调用 ${data.outputs.file_name}`;
       }
       renderZoneForm();
-      document.querySelectorAll('.input').forEach((input) => input.addEventListener('input', renderInputJson));
-      renderInputJson();
-      runModel();
+      document.querySelectorAll('.input').forEach((input) => input.addEventListener('input', renderInputState));
+      renderInputState();
+      runModel('optimize');
     </script>
   </body>
 </html>
