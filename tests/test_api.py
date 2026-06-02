@@ -68,6 +68,12 @@ def test_login_and_home_menu_pages() -> None:
     assert "showTopTab('compute');" in home_resp.text
     assert "openModulePanel('step-furnace');" in home_resp.text
     assert "/step-furnace-level2" in home_resp.text
+    assert "openLevel2RollerHearthModel" in home_resp.text
+    assert "/roller-hearth-level2" in home_resp.text
+    assert "直接进入辊底炉二级离线模型工作台" in home_resp.text
+    assert "openLevel2RingFurnaceModel" in home_resp.text
+    assert "/ring-furnace-level2" in home_resp.text
+    assert "直接进入环形炉二级离线模型工作台" in home_resp.text
 
     level2_resp = client.get("/step-furnace-level2")
     assert level2_resp.status_code == 200
@@ -75,12 +81,17 @@ def test_login_and_home_menu_pages() -> None:
     assert "POST /api/run" in level2_resp.text
     assert "钢坯参数" in level2_resp.text
     assert "炉段参数" in level2_resp.text or "炉温分区" in level2_resp.text
-    assert "运行离线优化" in level2_resp.text
-    assert "仅仿真" in level2_resp.text
-    assert "生成 PDF 报告" in level2_resp.text
-    assert "5次计算对比" in level2_resp.text
-    assert "toggleComparisonPanel" in level2_resp.text
-    assert "id=\"comparison-panel\" style=\"display:none;\"" in level2_resp.text
+    assert "运行当前计算" in level2_resp.text
+    assert "网页下载计算报告" in level2_resp.text
+    assert "report-download-panel" in level2_resp.text
+    assert "step-furnace_level2_offline_report.pdf" in level2_resp.text
+    assert "点击下载 ${reportFileName}" in level2_resp.text
+    assert "若浏览器未自动下载，请点击上方下载链接" in level2_resp.text
+    assert "优化计算" in level2_resp.text
+    assert "仿真计算" in level2_resp.text
+    assert "计算对比" in level2_resp.text
+    assert "showLevel2Page" in level2_resp.text
+    assert "runCurrentPage" in level2_resp.text
     assert "输入 JSON" not in level2_resp.text
     assert "计算结果" in level2_resp.text
     assert "计算过程" in level2_resp.text
@@ -89,13 +100,32 @@ def test_login_and_home_menu_pages() -> None:
     assert "厚度方向温度云图" in level2_resp.text
     assert "结果参数表" in level2_resp.text
     assert "最近 5 次计算对比" in level2_resp.text
-    assert "analysis-layout" in level2_resp.text
     assert "对比界面" in level2_resp.text
-    assert "与“仅仿真 / 运行离线优化”计算界面并列展示" in level2_resp.text
+    assert "独立展示最近 5 次优化与仿真计算" in level2_resp.text
     assert "comparisonRuns" in level2_resp.text
     assert "rememberComparison" in level2_resp.text
     assert "原始参数" in level2_resp.text
     assert "炉段原始参数" in level2_resp.text
+
+    roller_level2_resp = client.get("/roller-hearth-level2")
+    assert roller_level2_resp.status_code == 200
+    assert "辊底炉二级离线模型" in roller_level2_resp.text
+    assert "roller-hearth_level2_offline_report.pdf" in roller_level2_resp.text
+    assert "炉辊运行参数" in roller_level2_resp.text
+    assert "炉辊速度 m/min" in roller_level2_resp.text
+    assert "最小炉辊速度 m/min" in roller_level2_resp.text
+    assert "摆动运行" in roller_level2_resp.text
+
+    ring_level2_resp = client.get("/ring-furnace-level2")
+    assert ring_level2_resp.status_code == 200
+    assert "环形炉二级离线模型" in ring_level2_resp.text
+    assert "ring-furnace_level2_offline_report.pdf" in ring_level2_resp.text
+    assert "ring_furnace_level2_offline.py" in ring_level2_resp.text
+    assert "旋转炉底参数" in ring_level2_resp.text
+    assert "旋转周期 min" in ring_level2_resp.text
+    assert "装料角 deg" in ring_level2_resp.text
+    assert "有效加热角 deg" in ring_level2_resp.text
+    assert "分区角度 deg" in ring_level2_resp.text
 
     api_run_resp = client.post(
         "/api/run",
@@ -119,6 +149,40 @@ def test_login_and_home_menu_pages() -> None:
     assert api_run_data["outputs"]["operation_mode"] == "optimize"
     assert len(api_run_data["outputs"]["zone_results"]) == 4
     assert api_run_data["outputs"]["core_surface_delta_c"] <= 5
+
+    roller_run_resp = client.post(
+        "/api/run",
+        json={
+            "mode": "optimize",
+            "furnace_type": "辊底炉",
+            "billet": {"width_m": 2.0, "thickness_m": 0.08, "length_m": 8, "density": 7850, "specific_heat": 700, "conductivity": 36, "emissivity": 0.78},
+            "process": {"entry_temp_c": 30, "target_exit_temp_c": 920, "max_core_surface_delta_c": 5, "max_rise_rate_c_per_min": 38, "roller_speed_m_per_min": 0.28, "min_roller_speed_m_per_min": 0.12, "operation_mode": "continuous"},
+        },
+    )
+    assert roller_run_resp.status_code == 200
+    roller_run_data = roller_run_resp.json()
+    assert roller_run_data["outputs"]["file_name"] == "roller_hearth_level2_offline.py"
+    assert roller_run_data["outputs"]["furnace_type"] == "辊底炉"
+    assert "optimized_roller_speeds_m_per_min" in roller_run_data["outputs"]
+    assert "top_surface_temp_c" in roller_run_data["outputs"]["exit_temperatures"]
+    assert roller_run_data["outputs"]["core_surface_delta_c"] <= 5
+
+    ring_run_resp = client.post(
+        "/api/run",
+        json={
+            "mode": "optimize",
+            "furnace_type": "环形炉",
+            "billet": {"width_m": 0.18, "thickness_m": 0.12, "length_m": 1.2, "density": 7850, "specific_heat": 690, "conductivity": 34, "emissivity": 0.80},
+            "process": {"entry_temp_c": 30, "target_exit_temp_c": 920, "max_core_surface_delta_c": 5, "max_rise_rate_c_per_min": 40, "rotation_period_min": 72, "charge_angle_deg": 18, "discharge_angle_deg": 342, "available_heating_angle_deg": 324},
+        },
+    )
+    assert ring_run_resp.status_code == 200
+    ring_run_data = ring_run_resp.json()
+    assert ring_run_data["outputs"]["file_name"] == "ring_furnace_level2_offline.py"
+    assert ring_run_data["outputs"]["furnace_type"] == "环形炉"
+    assert "optimized_rotation_speeds_deg_per_min" in ring_run_data["outputs"]
+    assert "outer_surface_temp_c" in ring_run_data["outputs"]["exit_temperatures"]
+    assert ring_run_data["outputs"]["core_surface_delta_c"] <= 5
 
     simulate_resp = client.post("/api/run", json={"mode": "simulate"})
     assert simulate_resp.status_code == 200
@@ -144,6 +208,14 @@ def test_login_and_home_menu_pages() -> None:
     assert b"/Image" in report_pdf_resp.content
     assert len(report_pdf_resp.content) > 20000
 
+    ring_report_pdf_resp = client.post(
+        "/api/run/report",
+        json={"mode": "optimize", "furnace_type": "环形炉"},
+    )
+    assert ring_report_pdf_resp.status_code == 200
+    assert ring_report_pdf_resp.headers["content-type"] == "application/pdf"
+    assert ring_report_pdf_resp.content.startswith(b"%PDF")
+
     feedback_resp = client.get("/feedback")
     assert feedback_resp.status_code == 200
     assert "反馈台" in feedback_resp.text
@@ -154,6 +226,10 @@ def test_login_and_home_menu_pages() -> None:
     assert "步进炉下级功能按钮" in compute_resp.text
     assert "二级计算离线模型" in compute_resp.text
     assert "/step-furnace-level2" in compute_resp.text
+    assert "/roller-hearth-level2" in compute_resp.text
+    assert "/ring-furnace-level2" in compute_resp.text
+    assert "直接进入辊底炉二级离线模型工作台" in compute_resp.text
+    assert "直接进入环形炉二级离线模型工作台" in compute_resp.text
     assert "二级离线模型挂靠" not in compute_resp.text
     assert "树结构区" not in compute_resp.text
     assert "ensurePreferredOfflineNodeId()" not in compute_resp.text

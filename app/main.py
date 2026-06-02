@@ -85,6 +85,10 @@ from app.schemas import (
 )
 from app.walking_beam_level2_offline import DEFAULT_CASE as STEP_FURNACE_DEFAULT_CASE
 from app.walking_beam_level2_offline import run as run_step_furnace_offline_model
+from app.roller_hearth_level2_offline import DEFAULT_CASE as ROLLER_HEARTH_DEFAULT_CASE
+from app.roller_hearth_level2_offline import run as run_roller_hearth_offline_model
+from app.ring_furnace_level2_offline import DEFAULT_CASE as RING_FURNACE_DEFAULT_CASE
+from app.ring_furnace_level2_offline import run as run_ring_furnace_offline_model
 
 
 @asynccontextmanager
@@ -356,6 +360,7 @@ def _home_page_html() -> str:
     )
     roller_children = "".join(
         [
+            render_icon_button("二级计算离线模型", "直接进入辊底炉二级离线模型工作台", resolve_menu_icon("辊底炉计算"), "openLevel2RollerHearthModel()"),
             render_icon_button("加热曲线计算", "预留代码挂载位", resolve_menu_icon("辊底炉计算"), "showPlaceholder('辊底炉加热曲线计算')"),
             render_icon_button("换热器校核", "预留代码挂载位", resolve_menu_icon("辊底炉计算"), "showPlaceholder('辊底炉换热器校核')"),
             render_icon_button("热平衡核算", "预留代码挂载位", resolve_menu_icon("辊底炉计算"), "showPlaceholder('辊底炉热平衡核算')"),
@@ -363,6 +368,7 @@ def _home_page_html() -> str:
     )
     ring_children = "".join(
         [
+            render_icon_button("二级计算离线模型", "直接进入环形炉二级离线模型工作台", resolve_menu_icon("环形炉计算"), "openLevel2RingFurnaceModel()"),
             render_icon_button("加热曲线计算", "预留代码挂载位", resolve_menu_icon("环形炉计算"), "showPlaceholder('环形炉加热曲线计算')"),
             render_icon_button("换热器校核", "预留代码挂载位", resolve_menu_icon("环形炉计算"), "showPlaceholder('环形炉换热器校核')"),
             render_icon_button("热平衡核算", "预留代码挂载位", resolve_menu_icon("环形炉计算"), "showPlaceholder('环形炉热平衡核算')"),
@@ -545,6 +551,14 @@ def _home_page_html() -> str:
         window.location.href = '/step-furnace-level2';
       }}
 
+      function openLevel2RollerHearthModel() {{
+        window.location.href = '/roller-hearth-level2';
+      }}
+
+      function openLevel2RingFurnaceModel() {{
+        window.location.href = '/ring-furnace-level2';
+      }}
+
       function openAnalysisPanel(panelName) {{
         document.querySelectorAll('#top-tab-analysis .module-panel').forEach((panel) => panel.classList.remove('active'));
         document.getElementById(`analysis-panel-${{panelName}}`).classList.add('active');
@@ -593,7 +607,17 @@ def compute_page() -> str:
 
 @app.get("/step-furnace-level2", response_class=HTMLResponse)
 def step_furnace_level2_page() -> str:
-    return _step_furnace_level2_page_html()
+    return _level2_page_html("梁式步进炉", "步进炉计算", "step-furnace")
+
+
+@app.get("/roller-hearth-level2", response_class=HTMLResponse)
+def roller_hearth_level2_page() -> str:
+    return _level2_page_html("辊底炉", "辊底炉计算", "roller-hearth")
+
+
+@app.get("/ring-furnace-level2", response_class=HTMLResponse)
+def ring_furnace_level2_page() -> str:
+    return _level2_page_html("环形炉", "环形炉计算", "ring-furnace")
 
 
 @app.post("/api/run")
@@ -615,17 +639,28 @@ def run_step_furnace_level2_report(payload: dict) -> Response:
 
 def run_step_furnace_level2_payload(payload: dict) -> dict:
     mode = str(payload.get("mode", "optimize"))
+    furnace_type = str(payload.get("furnace_type") or "梁式步进炉")
+    default_case_by_furnace = {
+        "辊底炉": ROLLER_HEARTH_DEFAULT_CASE,
+        "环形炉": RING_FURNACE_DEFAULT_CASE,
+    }
+    default_case = default_case_by_furnace.get(furnace_type, STEP_FURNACE_DEFAULT_CASE)
     model_payload = {
         "billet": payload.get("billet") or {},
         "process": payload.get("process") or {},
-        "zones": payload.get("zones") or STEP_FURNACE_DEFAULT_CASE["zones"],
+        "zones": payload.get("zones") or default_case["zones"],
     }
-    result = run_step_furnace_offline_model(
+    run_model_by_furnace = {
+        "辊底炉": run_roller_hearth_offline_model,
+        "环形炉": run_ring_furnace_offline_model,
+    }
+    run_model = run_model_by_furnace.get(furnace_type, run_step_furnace_offline_model)
+    result = run_model(
         {
             "model_payload": model_payload,
             "run_options": {"mode": mode},
             "node_metadata": {
-                "furnace_type": "梁式步进炉",
+                "furnace_type": furnace_type,
                 "model_level": "二级",
                 "model_mode": "offline",
             },
@@ -681,25 +716,26 @@ def build_step_furnace_level2_pdf(input_payload: dict, outputs: dict) -> bytes:
     input_rows = [["输入项", "数值"]]
     for key in ["width_m", "thickness_m", "length_m", "density", "specific_heat", "conductivity", "emissivity"]:
         input_rows.append([key, billet.get(key, "-")])
-    for key in ["entry_temp_c", "target_exit_temp_c", "max_core_surface_delta_c", "max_rise_rate_c_per_min", "step_length_m", "step_cycle_s"]:
+    for key in ["entry_temp_c", "target_exit_temp_c", "max_core_surface_delta_c", "max_rise_rate_c_per_min", "step_length_m", "step_cycle_s", "roller_speed_m_per_min", "min_roller_speed_m_per_min", "operation_mode", "rotation_period_min", "charge_angle_deg", "discharge_angle_deg", "available_heating_angle_deg"]:
         input_rows.append([key, process.get(key, "-")])
     story.append(Paragraph("二、输入参数", heading))
     story.append(build_pdf_table(input_rows, [70 * mm, 80 * mm]))
 
     story.append(Paragraph("三、炉段参数", heading))
-    zone_rows = [["炉段", "长度 m", "设定温度 C", "换热系数 W/(m²·K)"]]
+    zone_rows = [["炉段", "长度/角度", "设定温度 C", "换热/辐射参数"]]
     for zone in input_payload.get("zones") or []:
-        zone_rows.append([zone.get("name", "-"), zone.get("length_m", "-"), zone.get("furnace_temp_c", "-"), zone.get("heat_transfer_coeff", "-")])
+        zone_rows.append([zone.get("name", "-"), zone.get("length_m", zone.get("zone_angle_deg", "-")), zone.get("furnace_temp_c", "-"), zone.get("heat_transfer_coeff", zone.get("radiation_factor", "-"))])
     story.append(build_pdf_table(zone_rows, [42 * mm, 28 * mm, 36 * mm, 45 * mm]))
 
     story.append(Paragraph("四、计算过程", heading))
     process_rows = [["炉段", "停留时间 s", "炉温 C", "表面 C", "心部 C", "平均 C", "升温速率 C/min"]]
     for zone in outputs.get("zone_results") or []:
+        surface_temp = zone.get("surface_temp_c", zone.get("top_surface_temp_c", zone.get("outer_surface_temp_c", "-")))
         process_rows.append([
             zone.get("zone_name", "-"),
             zone.get("residence_time_s", "-"),
             zone.get("furnace_setpoint_c", "-"),
-            zone.get("surface_temp_c", "-"),
+            surface_temp,
             zone.get("core_temp_c", "-"),
             zone.get("average_temp_c", "-"),
             zone.get("temp_rise_rate_c_per_min", "-"),
@@ -747,7 +783,7 @@ def build_profile_chart_image(outputs: dict) -> BytesIO:
 
 def build_heatmap_chart_image(outputs: dict) -> BytesIO:
     temps = outputs.get("exit_temperatures") or {}
-    surface = float(temps.get("surface_temp_c") or 0)
+    surface = float(temps.get("surface_temp_c") or temps.get("top_surface_temp_c") or temps.get("outer_surface_temp_c") or 0)
     core = float(temps.get("core_temp_c") or 0)
     rows = 18
     cols = 32
@@ -802,14 +838,14 @@ def feedback_page() -> str:
     return _feedback_page_html()
 
 
-def _step_furnace_level2_page_html() -> str:
-    return """
+def _level2_page_html(furnace_name: str, menu_name: str, download_prefix: str) -> str:
+    html = """
 <!doctype html>
 <html lang="zh-CN">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>梁式步进炉二级离线模型</title>
+    <title>__FURNACE_NAME__二级离线模型</title>
     <style>
       :root { color-scheme: light; --bg: #08101e; --panel: rgba(15, 23, 42, 0.92); --panel-soft: rgba(2, 8, 23, 0.36); --text: #eef2ff; --muted: #94a3b8; --accent: #60a5fa; --accent-2: #22c55e; --line: rgba(148, 163, 184, 0.2); --danger: #ef4444; }
       * { box-sizing: border-box; }
@@ -822,11 +858,15 @@ def _step_furnace_level2_page_html() -> str:
       .actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 16px; }
       .btn { display: inline-block; padding: 12px 16px; border-radius: 12px; text-decoration: none; font-weight: bold; border: 1px solid var(--line); color: var(--text); background: transparent; cursor: pointer; }
       .btn-primary { background: var(--accent); color: #081225; border-color: transparent; }
+      .page-tabs { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
+      .tab-btn { padding: 12px 16px; border-radius: 999px; border: 1px solid var(--line); background: rgba(2, 8, 23, 0.28); color: var(--text); cursor: pointer; font-weight: bold; }
+      .tab-btn.active { background: var(--accent); color: #081225; border-color: transparent; }
+      .page-view { display: none; }
+      .page-view.active { display: block; }
       .info-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 18px; }
       .info-card, .card { padding: 18px; }
       .section-label { margin: 0 0 10px; color: var(--accent); font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; }
       .workbench { display: grid; grid-template-columns: minmax(360px, 0.92fr) minmax(0, 1.08fr); gap: 18px; margin-top: 18px; align-items: start; }
-      .analysis-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(360px, 0.56fr); gap: 18px; margin-top: 18px; align-items: start; }
       .stack { display: grid; gap: 18px; }
       .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
       .field { display: grid; gap: 6px; }
@@ -851,24 +891,26 @@ def _step_furnace_level2_page_html() -> str:
       .code { white-space: pre-wrap; word-break: break-word; font-family: monospace; font-size: 12px; color: #cbd5e1; background: rgba(2, 8, 23, 0.36); border: 1px solid var(--line); border-radius: 14px; padding: 12px; }
       .ok { color: var(--accent-2); }
       .danger { color: var(--danger); }
-      @media (max-width: 1100px) { .workbench, .analysis-layout, .info-grid, .chart-grid { grid-template-columns: 1fr; } }
+      @media (max-width: 1100px) { .workbench, .info-grid, .chart-grid { grid-template-columns: 1fr; } }
       @media (max-width: 720px) { .form-grid, .result-grid { grid-template-columns: 1fr; } }
     </style>
   </head>
   <body>
     <main class="wrap">
       <section class="hero">
-        <h1>梁式步进炉二级离线模型</h1>
+        <h1>__FURNACE_NAME__二级离线模型</h1>
         <p>左侧填写工艺参数，右侧查看离线仿真和炉温优化结果。</p>
-        <div class="actions"><a class="btn" href="/home">返回主菜单</a><a class="btn" href="/compute">计算模块</a><button class="btn btn-primary" onclick="runModel('optimize')">运行离线优化</button><button class="btn" onclick="runModel('simulate')">仅仿真</button><button class="btn" onclick="downloadReport()">生成 PDF 报告</button><button class="btn" onclick="toggleComparisonPanel()">5次计算对比</button></div>
+        <div class="actions"><a class="btn" href="/home">返回主菜单</a><a class="btn" href="/compute">计算模块</a><button class="btn btn-primary" onclick="runCurrentPage()">运行当前计算</button><button class="btn" onclick="downloadReport()">网页下载计算报告</button></div>
+        <div class="page-tabs"><button class="tab-btn active" data-page="optimize" onclick="showLevel2Page('optimize')">优化计算</button><button class="tab-btn" data-page="simulate" onclick="showLevel2Page('simulate')">仿真计算</button><button class="tab-btn" data-page="comparison" onclick="showLevel2Page('comparison')">计算对比</button></div>
         <div class="info-grid">
-          <div class="info-card"><div class="section-label">程序入口</div><strong>walking_beam_level2_offline.py</strong></div>
+          <div class="info-card"><div class="section-label">程序入口</div><strong>__MODEL_FILE_NAME__</strong></div>
           <div class="info-card"><div class="section-label">服务接口</div><strong>POST /api/run</strong></div>
         </div>
+        <div id="report-download-panel" class="muted" style="display:none; margin-top:14px;"></div>
       </section>
 
-      <section class="analysis-layout">
-        <div>
+      <section id="optimize-page" class="page-view active">
+        <div class="section-label" id="calc-page-label" style="margin-top:18px;">优化计算页面</div>
           <section class="workbench">
             <aside class="stack">
               <article class="card">
@@ -889,11 +931,8 @@ def _step_furnace_level2_page_html() -> str:
                 </div>
               </article>
               <article class="card">
-                <h2>步进参数</h2>
-                <div class="form-grid">
-                  <div class="field"><label>步距 m</label><input class="input" id="step_length_m" type="number" step="0.1" value="0.2" /></div>
-                  <div class="field"><label>步进周期 s</label><input class="input" id="step_cycle_s" type="number" step="1" value="70" /></div>
-                </div>
+                <h2 id="motion-param-title">步进参数</h2>
+                <div class="form-grid" id="motion-param-form"></div>
               </article>
               <article class="card">
                 <h2>炉温分区</h2>
@@ -925,17 +964,28 @@ def _step_furnace_level2_page_html() -> str:
               </article>
             </section>
           </section>
-        </div>
-        <aside class="card" id="comparison-panel" style="display:none;">
+      </section>
+      <section id="comparison-page" class="page-view">
+        <aside class="card" style="margin-top:18px;">
           <div class="section-label">对比界面</div>
           <h2>最近 5 次计算对比</h2>
-          <p class="muted">与“仅仿真 / 运行离线优化”计算界面并列展示，保留当前页面会话内最近 5 次原始参数和计算结果。</p>
+          <p class="muted">独立展示最近 5 次优化与仿真计算，保留当前页面会话内原始参数和计算结果。</p>
           <div id="comparison-table" class="comparison-table-wrap muted">暂无对比记录。</div>
         </aside>
       </section>
     </main>
     <script>
-      const zoneDefaults = [
+      const furnaceName = '__FURNACE_NAME__';
+      const reportFileName = '__REPORT_FILE_NAME__';
+      const modelFileName = '__MODEL_FILE_NAME__';
+      const isRollerFurnace = furnaceName === '辊底炉';
+      const isRingFurnace = furnaceName === '环形炉';
+      const zoneDefaults = isRingFurnace ? [
+        { key: 'preheat_arc', name: 'preheat_arc', length: 80, temp: 980, htc: 0.82 },
+        { key: 'heating_arc_1', name: 'heating_arc_1', length: 92, temp: 1180, htc: 0.92 },
+        { key: 'heating_arc_2', name: 'heating_arc_2', length: 86, temp: 1280, htc: 0.96 },
+        { key: 'soaking_arc', name: 'soaking_arc', length: 66, temp: 1120, htc: 0.88 }
+      ] : [
         { key: 'preheat', name: 'preheat', length: 20, temp: 1100, htc: 210 },
         { key: 'heating_1', name: 'heating_1', length: 20, temp: 1280, htc: 250 },
         { key: 'heating_2', name: 'heating_2', length: 18, temp: 1380, htc: 260 },
@@ -943,24 +993,59 @@ def _step_furnace_level2_page_html() -> str:
       ];
       let currentRunMode = 'optimize';
       const comparisonRuns = [];
-      let comparisonVisible = false;
+      let latestReportUrl = '';
       function num(id) { return Number(document.getElementById(id).value || 0); }
       function escapeHtml(value) { return String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;'); }
       function renderZoneForm() {
-        document.getElementById('zone-form').innerHTML = zoneDefaults.map((zone, index) => `<div class="zone-card"><h3>第${index + 1}段: ${escapeHtml(zone.name)}</h3><div class="form-grid"><div class="field"><label>炉段名称</label><input class="input" id="zone_${index}_name" value="${escapeHtml(zone.name)}" /></div><div class="field"><label>炉段长度 m</label><input class="input" id="zone_${index}_length" type="number" step="0.1" value="${zone.length}" /></div><div class="field"><label>设定温度 C</label><input class="input" id="zone_${index}_temp" type="number" step="1" value="${zone.temp}" /></div><div class="field"><label>换热系数 W/(m²·K)</label><input class="input" id="zone_${index}_htc" type="number" step="1" value="${zone.htc}" /></div></div></div>`).join('');
+        const lengthLabel = isRingFurnace ? '分区角度 deg' : '炉段长度 m';
+        const htcLabel = isRingFurnace ? '辐射修正系数' : '换热系数 W/(m²·K)';
+        const htcStep = isRingFurnace ? '0.01' : '1';
+        document.getElementById('zone-form').innerHTML = zoneDefaults.map((zone, index) => `<div class="zone-card"><h3>第${index + 1}段: ${escapeHtml(zone.name)}</h3><div class="form-grid"><div class="field"><label>炉段名称</label><input class="input" id="zone_${index}_name" value="${escapeHtml(zone.name)}" /></div><div class="field"><label>${lengthLabel}</label><input class="input" id="zone_${index}_length" type="number" step="0.1" value="${zone.length}" /></div><div class="field"><label>设定温度 C</label><input class="input" id="zone_${index}_temp" type="number" step="1" value="${zone.temp}" /></div><div class="field"><label>${htcLabel}</label><input class="input" id="zone_${index}_htc" type="number" step="${htcStep}" value="${zone.htc}" /></div></div></div>`).join('');
+      }
+      function renderMotionParamForm() {
+        document.getElementById('motion-param-title').textContent = isRollerFurnace ? '炉辊运行参数' : (isRingFurnace ? '旋转炉底参数' : '步进参数');
+        document.getElementById('motion-param-form').innerHTML = isRollerFurnace
+          ? `<div class="field"><label>炉辊速度 m/min</label><input class="input" id="roller_speed_m_per_min" type="number" step="0.01" value="0.28" /></div><div class="field"><label>最小炉辊速度 m/min</label><input class="input" id="min_roller_speed_m_per_min" type="number" step="0.01" value="0.12" /></div><div class="field"><label>运行方式</label><select class="input" id="operation_mode"><option value="continuous">连续运行</option><option value="swing">摆动运行</option></select></div>`
+          : isRingFurnace
+          ? `<div class="field"><label>旋转周期 min</label><input class="input" id="rotation_period_min" type="number" step="1" value="72" /></div><div class="field"><label>装料角 deg</label><input class="input" id="charge_angle_deg" type="number" step="1" value="18" /></div><div class="field"><label>出料角 deg</label><input class="input" id="discharge_angle_deg" type="number" step="1" value="342" /></div><div class="field"><label>有效加热角 deg</label><input class="input" id="available_heating_angle_deg" type="number" step="1" value="324" /></div>`
+          : `<div class="field"><label>步距 m</label><input class="input" id="step_length_m" type="number" step="0.1" value="0.2" /></div><div class="field"><label>步进周期 s</label><input class="input" id="step_cycle_s" type="number" step="1" value="70" /></div>`;
+      }
+      function optionalNum(id, fallback = 0) {
+        const element = document.getElementById(id);
+        return element ? Number(element.value || fallback) : fallback;
+      }
+      function optionalValue(id, fallback = '') {
+        const element = document.getElementById(id);
+        return element ? element.value : fallback;
       }
       function buildPayload(mode = 'optimize') {
         return {
           mode,
+          furnace_type: furnaceName,
           billet: {
             width_m: num('width_m'), thickness_m: num('thickness_m'), length_m: num('length_m'), density: num('density'),
             specific_heat: num('specific_heat'), conductivity: num('conductivity'), emissivity: num('emissivity')
           },
           process: {
             entry_temp_c: num('entry_temp_c'), target_exit_temp_c: num('target_exit_temp_c'), max_core_surface_delta_c: num('max_core_surface_delta_c'),
-            max_rise_rate_c_per_min: num('max_rise_rate_c_per_min'), step_length_m: num('step_length_m'), step_cycle_s: num('step_cycle_s')
+            max_rise_rate_c_per_min: num('max_rise_rate_c_per_min'),
+            ...(isRollerFurnace ? {
+              roller_speed_m_per_min: optionalNum('roller_speed_m_per_min', 0.28),
+              min_roller_speed_m_per_min: optionalNum('min_roller_speed_m_per_min', 0.12),
+              operation_mode: optionalValue('operation_mode', 'continuous')
+            } : isRingFurnace ? {
+              rotation_period_min: optionalNum('rotation_period_min', 72),
+              charge_angle_deg: optionalNum('charge_angle_deg', 18),
+              discharge_angle_deg: optionalNum('discharge_angle_deg', 342),
+              available_heating_angle_deg: optionalNum('available_heating_angle_deg', 324)
+            } : {
+              step_length_m: optionalNum('step_length_m', 0.2),
+              step_cycle_s: optionalNum('step_cycle_s', 70)
+            })
           },
-          zones: zoneDefaults.map((zone, index) => ({ name: document.getElementById(`zone_${index}_name`).value || zone.name, length_m: num(`zone_${index}_length`), furnace_temp_c: num(`zone_${index}_temp`), heat_transfer_coeff: num(`zone_${index}_htc`) }))
+          zones: zoneDefaults.map((zone, index) => isRingFurnace
+            ? { name: document.getElementById(`zone_${index}_name`).value || zone.name, zone_angle_deg: num(`zone_${index}_length`), furnace_temp_c: num(`zone_${index}_temp`), radiation_factor: num(`zone_${index}_htc`) }
+            : { name: document.getElementById(`zone_${index}_name`).value || zone.name, length_m: num(`zone_${index}_length`), furnace_temp_c: num(`zone_${index}_temp`), heat_transfer_coeff: num(`zone_${index}_htc`) })
         };
       }
       function renderInputState() {}
@@ -980,7 +1065,7 @@ def _step_furnace_level2_page_html() -> str:
       }
       function renderHeatmap(outputs) {
         const temps = outputs.exit_temperatures || {};
-        const surface = Number(temps.surface_temp_c || 0);
+        const surface = Number(temps.surface_temp_c || temps.top_surface_temp_c || temps.outer_surface_temp_c || 0);
         const core = Number(temps.core_temp_c || 0);
         const rows = 9;
         const cols = 16;
@@ -997,7 +1082,8 @@ def _step_furnace_level2_page_html() -> str:
         document.getElementById('heatmap-chart').innerHTML = `${cells}<text x="36" y="220" fill="#94a3b8" font-size="12">表面 ${surface} C</text><text x="360" y="220" fill="#94a3b8" font-size="12">心部 ${core} C</text>`;
       }
       function renderResultTable(zones) {
-        document.getElementById('result-table').innerHTML = `<table><thead><tr><th>炉段</th><th>停留时间 s</th><th>炉温 C</th><th>表面 C</th><th>心部 C</th><th>平均 C</th><th>升温速率 C/min</th></tr></thead><tbody>${zones.map((zone) => `<tr><td>${escapeHtml(zone.zone_name)}</td><td>${escapeHtml(zone.residence_time_s)}</td><td>${escapeHtml(zone.furnace_setpoint_c)}</td><td>${escapeHtml(zone.surface_temp_c)}</td><td>${escapeHtml(zone.core_temp_c)}</td><td>${escapeHtml(zone.average_temp_c)}</td><td>${escapeHtml(zone.temp_rise_rate_c_per_min)}</td></tr>`).join('')}</tbody></table>`;
+        const motionHeader = isRingFurnace ? '炉底旋转速度 deg/min' : '炉辊速度 m/min';
+        document.getElementById('result-table').innerHTML = `<table><thead><tr><th>炉段</th><th>停留时间 s</th><th>炉温 C</th><th>表面 C</th><th>心部 C</th><th>平均 C</th><th>${motionHeader}</th><th>升温速率 C/min</th></tr></thead><tbody>${zones.map((zone) => `<tr><td>${escapeHtml(zone.zone_name)}</td><td>${escapeHtml(zone.residence_time_s)}</td><td>${escapeHtml(zone.furnace_setpoint_c)}</td><td>${escapeHtml(zone.surface_temp_c ?? zone.top_surface_temp_c ?? zone.outer_surface_temp_c ?? '-')}</td><td>${escapeHtml(zone.core_temp_c)}</td><td>${escapeHtml(zone.average_temp_c)}</td><td>${escapeHtml(zone.roller_speed_m_per_min ?? zone.hearth_rotation_deg_per_min ?? '-')}</td><td>${escapeHtml(zone.temp_rise_rate_c_per_min)}</td></tr>`).join('')}</tbody></table>`;
       }
       function formatZoneSetpoints(outputs) {
         return Object.entries(outputs.optimized_setpoints_c || {}).map(([name, value]) => `${name}: ${value}`).join('<br>') || '-';
@@ -1005,17 +1091,21 @@ def _step_furnace_level2_page_html() -> str:
       function formatInputSummary(payload) {
         const billet = payload.billet || {};
         const process = payload.process || {};
+        const motion = payload.furnace_type === '辊底炉'
+          ? [`炉辊速度: ${process.roller_speed_m_per_min} m/min`, `最小炉辊速度: ${process.min_roller_speed_m_per_min} m/min`, `运行方式: ${process.operation_mode}`]
+          : payload.furnace_type === '环形炉'
+          ? [`旋转周期: ${process.rotation_period_min} min`, `装料角: ${process.charge_angle_deg} deg`, `出料角: ${process.discharge_angle_deg} deg`, `有效加热角: ${process.available_heating_angle_deg} deg`]
+          : [`步距: ${process.step_length_m} m`, `周期: ${process.step_cycle_s} s`];
         return [
           `厚度: ${billet.thickness_m} m`,
           `目标: ${process.target_exit_temp_c} C`,
-          `步距: ${process.step_length_m} m`,
-          `周期: ${process.step_cycle_s} s`,
+          ...motion,
           `最大温差: ${process.max_core_surface_delta_c} C`,
           `升温速率: ${process.max_rise_rate_c_per_min} C/min`
         ].join('<br>');
       }
       function formatZoneInputs(payload) {
-        return (payload.zones || []).map((zone) => `${escapeHtml(zone.name)}: ${escapeHtml(zone.length_m)} m / ${escapeHtml(zone.furnace_temp_c)} C / ${escapeHtml(zone.heat_transfer_coeff)}`).join('<br>') || '-';
+        return (payload.zones || []).map((zone) => `${escapeHtml(zone.name)}: ${escapeHtml(zone.length_m ?? zone.zone_angle_deg)} ${payload.furnace_type === '环形炉' ? 'deg' : 'm'} / ${escapeHtml(zone.furnace_temp_c)} C / ${escapeHtml(zone.heat_transfer_coeff ?? zone.radiation_factor)}`).join('<br>') || '-';
       }
       function rememberComparison(payload, outputs) {
         comparisonRuns.unshift({ payload: JSON.parse(JSON.stringify(payload)), outputs: JSON.parse(JSON.stringify(outputs)), createdAt: new Date() });
@@ -1028,10 +1118,21 @@ def _step_furnace_level2_page_html() -> str:
         target.className = 'comparison-table-wrap';
         target.innerHTML = `<table class="comparison-table"><thead><tr><th>序号</th><th>时间</th><th>模式</th><th class="wide-cell">原始参数</th><th class="wide-cell">炉段原始参数</th><th>出炉平均 C</th><th>目标偏差 C</th><th>表里温差 C</th><th>最大升温速率</th><th>能耗代理</th><th>氧化代理</th><th class="wide-cell">炉温结果</th></tr></thead><tbody>${comparisonRuns.map((run, index) => { const outputs = run.outputs || {}; const temps = outputs.exit_temperatures || {}; return `<tr><td>${index + 1}</td><td>${escapeHtml(run.createdAt.toLocaleTimeString())}</td><td>${outputs.operation_mode === 'optimize' ? '离线优化' : '离线仿真'}</td><td>${formatInputSummary(run.payload)}</td><td>${formatZoneInputs(run.payload)}</td><td>${escapeHtml(temps.average_temp_c ?? '-')}</td><td>${escapeHtml(outputs.target_deviation_c ?? '-')}</td><td>${escapeHtml(outputs.core_surface_delta_c ?? '-')}</td><td>${escapeHtml(outputs.max_rise_rate_c_per_min ?? '-')}</td><td>${escapeHtml(outputs.energy_proxy ?? '-')}</td><td>${escapeHtml(outputs.oxidation_proxy ?? '-')}</td><td>${formatZoneSetpoints(outputs)}</td></tr>`; }).join('')}</tbody></table>`;
       }
-      function toggleComparisonPanel() {
-        comparisonVisible = !comparisonVisible;
-        document.getElementById('comparison-panel').style.display = comparisonVisible ? 'block' : 'none';
-        if (comparisonVisible) { renderComparisonTable(); }
+      function showLevel2Page(page) {
+        document.querySelectorAll('.tab-btn').forEach((button) => button.classList.toggle('active', button.dataset.page === page));
+        document.querySelectorAll('.page-view').forEach((section) => section.classList.remove('active'));
+        if (page === 'comparison') {
+          document.getElementById('comparison-page').classList.add('active');
+          renderComparisonTable();
+          return;
+        }
+        currentRunMode = page === 'simulate' ? 'simulate' : 'optimize';
+        document.getElementById('optimize-page').classList.add('active');
+        document.getElementById('calc-page-label').textContent = currentRunMode === 'optimize' ? '优化计算页面' : '仿真计算页面';
+        document.getElementById('run-message').textContent = currentRunMode === 'optimize' ? '当前页面为优化计算，点击“运行当前计算”执行离线优化。' : '当前页面为仿真计算，点击“运行当前计算”执行离线仿真。';
+      }
+      function runCurrentPage() {
+        runModel(currentRunMode);
       }
       function renderResults(outputs) {
         const temps = outputs.exit_temperatures || {};
@@ -1042,7 +1143,7 @@ def _step_furnace_level2_page_html() -> str:
           renderMetric('综合目标值', outputs.objective_value),
           renderMetric('出炉平均温度', `${temps.average_temp_c} C`),
           renderMetric('目标偏差', `${outputs.target_deviation_c} C`),
-          renderMetric('表面温度', `${temps.surface_temp_c} C`),
+          renderMetric('表面温度', `${temps.surface_temp_c ?? temps.top_surface_temp_c ?? temps.outer_surface_temp_c} C`),
           renderMetric('心部温度', `${temps.core_temp_c} C`),
           renderMetric('表里温差', `${outputs.core_surface_delta_c} C`),
           renderMetric('最大升温速率', `${outputs.max_rise_rate_c_per_min} C/min`),
@@ -1051,7 +1152,7 @@ def _step_furnace_level2_page_html() -> str:
           renderMetric('氧化烧损代理项', outputs.oxidation_proxy),
           renderMetric('温升曲线偏差项', Math.round(Math.abs(outputs.target_deviation_c || 0) * 1315.34 * 100) / 100)
         ].join('');
-        document.getElementById('process-panel').innerHTML = zones.map((zone) => `<div class="process-item"><strong>${escapeHtml(zone.zone_name)}</strong><div class="muted">停留时间: ${escapeHtml(zone.residence_time_s)} s | 炉温: ${escapeHtml(zone.furnace_setpoint_c)} C</div><div class="muted">出口表面: ${escapeHtml(zone.surface_temp_c)} C | 心部: ${escapeHtml(zone.core_temp_c)} C | 平均: ${escapeHtml(zone.average_temp_c)} C</div></div>`).join('');
+        document.getElementById('process-panel').innerHTML = zones.map((zone) => `<div class="process-item"><strong>${escapeHtml(zone.zone_name)}</strong><div class="muted">停留时间: ${escapeHtml(zone.residence_time_s)} s | 炉温: ${escapeHtml(zone.furnace_setpoint_c)} C | ${isRingFurnace ? '炉底旋转速度' : '炉辊速度'}: ${escapeHtml(zone.roller_speed_m_per_min ?? zone.hearth_rotation_deg_per_min ?? '-')} ${isRingFurnace ? 'deg/min' : 'm/min'}</div><div class="muted">出口表面: ${escapeHtml(zone.surface_temp_c ?? zone.top_surface_temp_c ?? zone.outer_surface_temp_c ?? '-')} C | 心部: ${escapeHtml(zone.core_temp_c)} C | 平均: ${escapeHtml(zone.average_temp_c)} C</div></div>`).join('');
         renderProfileChart(zones);
         renderHeatmap(outputs);
         renderResultTable(zones);
@@ -1062,7 +1163,7 @@ def _step_furnace_level2_page_html() -> str:
         const payload = buildPayload(mode);
         const message = document.getElementById('run-message');
         message.className = 'muted';
-        message.textContent = mode === 'optimize' ? '正在执行梁式步进炉二级离线优化...' : '正在执行梁式步进炉离线仿真...';
+        message.textContent = mode === 'optimize' ? `正在执行${furnaceName}二级离线优化...` : `正在执行${furnaceName}离线仿真...`;
         const res = await fetch('/api/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
         if (!res.ok) { message.className = 'danger'; message.textContent = `计算失败: ${res.status}`; return; }
         const data = await res.json();
@@ -1073,31 +1174,47 @@ def _step_furnace_level2_page_html() -> str:
       }
       async function downloadReport() {
         const message = document.getElementById('run-message');
+        const panel = document.getElementById('report-download-panel');
         message.className = 'muted';
         message.textContent = '正在生成 PDF 计算报告...';
-        const res = await fetch('/api/run/report', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(buildPayload(currentRunMode)) });
-        if (!res.ok) { message.className = 'danger'; message.textContent = `报告生成失败: ${res.status}`; return; }
-        const blob = await res.blob();
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = 'walking_beam_level2_offline_report.pdf';
-        document.body.appendChild(link);
-        link.click();
-        link.remove();
-        URL.revokeObjectURL(url);
-        message.className = 'ok';
-        message.textContent = 'PDF 计算报告已生成';
+        panel.style.display = 'block';
+        panel.textContent = '正在准备下载链接...';
+        try {
+          const res = await fetch('/api/run/report', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(buildPayload(currentRunMode)) });
+          if (!res.ok) { message.className = 'danger'; message.textContent = `报告生成失败: ${res.status}`; panel.textContent = '报告生成失败，请重新点击下载。'; return; }
+          const blob = await res.blob();
+          if (latestReportUrl) { URL.revokeObjectURL(latestReportUrl); }
+          latestReportUrl = URL.createObjectURL(blob);
+          panel.innerHTML = `<a class="btn btn-primary" href="${latestReportUrl}" download="${reportFileName}">点击下载 ${reportFileName}</a>`;
+          panel.querySelector('a').click();
+          message.className = 'ok';
+          message.textContent = 'PDF 计算报告已生成。若浏览器未自动下载，请点击上方下载链接。';
+        } catch (error) {
+          message.className = 'danger';
+          message.textContent = '报告下载失败，请刷新页面后重试。';
+          panel.textContent = String(error);
+        }
       }
       renderZoneForm();
+      renderMotionParamForm();
       document.querySelectorAll('.input').forEach((input) => input.addEventListener('input', renderInputState));
       renderInputState();
       renderComparisonTable();
+      showLevel2Page('optimize');
       runModel('optimize');
     </script>
   </body>
 </html>
 """
+    model_file_name = {
+        "辊底炉": "roller_hearth_level2_offline.py",
+        "环形炉": "ring_furnace_level2_offline.py",
+    }.get(furnace_name, "walking_beam_level2_offline.py")
+    return (
+        html.replace("__FURNACE_NAME__", furnace_name)
+        .replace("__REPORT_FILE_NAME__", f"{download_prefix}_level2_offline_report.pdf")
+        .replace("__MODEL_FILE_NAME__", model_file_name)
+    )
 
 
 def _compute_page_html() -> str:
@@ -1147,7 +1264,9 @@ def _compute_page_html() -> str:
         <article class="card disabled"><div class="section-label">步进炉</div><h2>加热曲线计算</h2><p>模块入口预留。</p></article>
         <article class="card disabled"><div class="section-label">步进炉</div><h2>换热器校核</h2><p>模块入口预留。</p></article>
         <article class="card disabled"><div class="section-label">步进炉</div><h2>热平衡核算</h2><p>模块入口预留。</p></article>
+        <article class="card active"><div class="section-label">辊底炉</div><h2>二级计算离线模型</h2><p>直接进入辊底炉二级离线模型工作台，编辑参数并运行模型。</p><div class="actions"><a class="btn btn-primary" href="/roller-hearth-level2">进入计算模块</a></div></article>
         <article class="card disabled"><div class="section-label">辊底炉</div><h2>加热曲线计算</h2><p>模块入口预留。</p></article>
+        <article class="card active"><div class="section-label">环形炉</div><h2>二级计算离线模型</h2><p>直接进入环形炉二级离线模型工作台，编辑参数并运行模型。</p><div class="actions"><a class="btn btn-primary" href="/ring-furnace-level2">进入计算模块</a></div></article>
         <article class="card disabled"><div class="section-label">环形炉</div><h2>加热曲线计算</h2><p>模块入口预留。</p></article>
       </section>
     </main>
