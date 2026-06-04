@@ -2,4 +2,5 @@ __pycache__/
 *.pyc
 .pytest_cache/
 calc_platform.db
+*.db
 workspace.zip
