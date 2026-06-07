@@ -18,6 +18,18 @@ class ProjectCreate(BaseModel):
     description: str | None = None
 
 
+class ProjectManagementCreate(BaseModel):
+    project_name: str
+    project_manager: str
+    created_at: str | None = None
+    enterprise: str
+    technical_terms: str | None = None
+
+
+class ProjectManagementBatchCreate(BaseModel):
+    items: list[ProjectManagementCreate]
+
+
 class ProjectRead(ProjectCreate):
     id: int
 

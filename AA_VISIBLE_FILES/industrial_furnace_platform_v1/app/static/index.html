@@ -5,423 +5,255 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>工业炉计算平台 V1</title>
   <style>
-    :root {
-      color-scheme: light;
-      --bg: #eef2f7;
-      --panel: #ffffff;
-      --ink: #142033;
-      --muted: #68758a;
-      --line: #d8e0ea;
-      --blue: #1d4ed8;
-      --green: #047857;
-      --red: #b91c1c;
-      --amber: #b45309;
-    }
+    :root { --bg: #eef2f7; --panel: #fff; --ink: #142033; --muted: #68758a; --line: #d8e0ea; --blue: #1d4ed8; --green: #047857; --red: #b91c1c; --amber: #b45309; }
     * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      font-family: Inter, "Segoe UI", Arial, sans-serif;
-      background: linear-gradient(135deg, #f8fafc 0%, var(--bg) 60%, #dbeafe 100%);
-      color: var(--ink);
-    }
-    header {
-      padding: 28px 32px 18px;
-      border-bottom: 1px solid var(--line);
-      background: rgba(255, 255, 255, .78);
-      backdrop-filter: blur(10px);
-      position: sticky;
-      top: 0;
-      z-index: 5;
-    }
-    h1 { margin: 0 0 8px; font-size: clamp(24px, 4vw, 38px); letter-spacing: -.04em; }
-    .subtitle { color: var(--muted); max-width: 840px; line-height: 1.6; }
-    main { display: grid; grid-template-columns: 360px minmax(0, 1fr); gap: 18px; padding: 18px; }
-    section, aside { background: rgba(255,255,255,.9); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 20px 45px rgba(15, 23, 42, .08); }
-    aside { padding: 18px; height: max-content; position: sticky; top: 126px; }
-    section { padding: 18px; margin-bottom: 18px; }
-    h2 { margin: 0 0 14px; font-size: 18px; }
-    label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
-    select, input, textarea, button {
-      width: 100%;
-      border: 1px solid var(--line);
-      border-radius: 12px;
-      padding: 10px 12px;
-      font: inherit;
-      background: #fff;
-      color: var(--ink);
-    }
-    textarea { min-height: 150px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
-    button { cursor: pointer; background: var(--blue); color: white; border-color: var(--blue); font-weight: 700; }
-    button.secondary { background: #fff; color: var(--blue); }
-    button.green { background: var(--green); border-color: var(--green); }
-    button.amber { background: var(--amber); border-color: var(--amber); }
+    body { margin: 0; font-family: Inter, "Segoe UI", Arial, sans-serif; background: linear-gradient(135deg, #f8fafc, var(--bg)); color: var(--ink); }
+    .shell { display: grid; grid-template-columns: 300px minmax(0, 1fr); min-height: 100vh; }
+    aside { background: #0f172a; color: #e2e8f0; padding: 22px; position: sticky; top: 0; height: 100vh; overflow: auto; }
+    .brand { padding-bottom: 18px; border-bottom: 1px solid rgba(226, 232, 240, .14); margin-bottom: 18px; }
+    h1 { margin: 0 0 8px; font-size: 26px; letter-spacing: -.04em; line-height: 1.05; }
+    h2 { margin: 0 0 8px; font-size: 22px; }
+    h3 { margin: 0 0 10px; font-size: 16px; }
+    .subtitle { color: #a7b3c6; line-height: 1.55; font-size: 13px; }
+    main { padding: 22px; }
+    section, .card { background: rgba(255,255,255,.94); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 20px 45px rgba(15, 23, 42, .08); }
+    section { padding: 18px; }
+    .view { display: none; }
+    .view.active { display: block; }
+    .view-head { margin-bottom: 16px; }
+    .view-head p { margin: 6px 0 0; color: var(--muted); line-height: 1.6; }
+    .nav { display: grid; gap: 8px; margin: 18px 0; }
+    .nav button { text-align: left; background: transparent; color: #dbeafe; border-color: rgba(219, 234, 254, .16); font-weight: 650; }
+    .nav button.active { background: #2563eb; border-color: #2563eb; color: #fff; }
     .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .module-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
     .stack { display: grid; gap: 12px; }
     .row { display: flex; gap: 10px; align-items: center; }
     .row > * { flex: 1; }
     .card-list { display: grid; gap: 10px; }
-    .card {
-      border: 1px solid var(--line);
-      border-radius: 14px;
-      padding: 12px;
-      background: #fbfdff;
-    }
+    .card { padding: 12px; background: #fbfdff; }
     .card strong { display: block; margin-bottom: 4px; }
     .meta { color: var(--muted); font-size: 12px; line-height: 1.5; }
     .pill { display: inline-flex; border-radius: 999px; padding: 3px 8px; font-size: 12px; background: #e0ecff; color: #1746a2; margin-right: 4px; }
+    label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+    aside label { color: #cbd5e1; }
+    select, input, textarea, button { width: 100%; border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; font: inherit; background: #fff; color: var(--ink); }
+    textarea { min-height: 130px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
+    button { cursor: pointer; background: var(--blue); color: white; border-color: var(--blue); font-weight: 700; }
+    button.secondary { background: #fff; color: var(--blue); }
+    button.green { background: var(--green); border-color: var(--green); }
+    button.amber { background: var(--amber); border-color: var(--amber); }
+    button.danger { background: var(--red); border-color: var(--red); }
     .ok { color: var(--green); }
     .bad { color: var(--red); }
-    pre {
-      white-space: pre-wrap;
-      overflow: auto;
-      background: #0f172a;
-      color: #e2e8f0;
-      border-radius: 14px;
-      padding: 14px;
-      min-height: 170px;
-      max-height: 380px;
-      font-size: 12px;
-    }
-    @media (max-width: 880px) {
-      main { grid-template-columns: 1fr; }
-      aside { position: static; }
-      .grid { grid-template-columns: 1fr; }
-    }
+    pre { white-space: pre-wrap; overflow: auto; background: #0f172a; color: #e2e8f0; border-radius: 14px; padding: 14px; min-height: 150px; max-height: 360px; font-size: 12px; }
+    @media (max-width: 880px) { .shell { grid-template-columns: 1fr; } aside { position: static; height: auto; } .grid, .module-grid { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
-  <header>
-    <h1>工业炉计算平台 V1.0 操作台</h1>
-    <div class="subtitle">这是 V1 演示闭环：初始化样例数据，选择炉型名目，执行升温计算，提交审批，生成报告，并创建横向对比组。</div>
-  </header>
-  <main>
+  <div class="shell">
     <aside class="stack">
+      <div class="brand">
+        <h1>工业炉计算平台 V1.0</h1>
+        <div class="subtitle">项目管理和计算名目管理按精简需求展示，其它业务模块恢复原导航入口。</div>
+      </div>
+      <nav class="nav" aria-label="功能导航">
+        <button class="active" data-view="project-management" onclick="showView('project-management')">项目管理</button>
+        <button data-view="calc-item-management" onclick="showView('calc-item-management')">计算名目管理</button>
+        <button data-view="calculation" onclick="showView('calculation')">计算执行</button>
+        <button data-view="comparison-view" onclick="showView('comparison-view')">横向对比</button>
+        <button data-view="approval" onclick="showView('approval')">审批报告</button>
+        <button data-view="digital-twin" onclick="showView('digital-twin')">数字孪生</button>
+        <button data-view="artifact-view" onclick="showView('artifact-view')">项目资料</button>
+        <button data-view="ai-view" onclick="showView('ai-view')">AI 联合分析</button>
+      </nav>
       <div>
         <label for="role">当前角色</label>
-        <select id="role">
-          <option value="engineer">普通计算人员</option>
-          <option value="reviewer">审核人</option>
-          <option value="template_admin">模板管理员</option>
-          <option value="algorithm_admin">算法维护人员</option>
-          <option value="admin" selected>系统管理员</option>
-          <option value="readonly">只读用户</option>
-        </select>
+        <select id="role"><option value="admin" selected>系统管理员</option><option value="engineer">普通计算人员</option><option value="readonly">只读用户</option></select>
       </div>
       <button onclick="seedDemo()">初始化样例数据</button>
-      <button class="secondary" onclick="loadAll()">刷新数据</button>
-      <div>
-        <label>状态输出</label>
-        <pre id="log">等待操作...</pre>
-      </div>
+      <button class="secondary" onclick="loadAll()">刷新台账</button>
     </aside>
-    <div>
-      <section>
-        <h2>项目与名目</h2>
+    <main class="stack">
+      <section id="project-management" class="view active">
+        <div class="view-head">
+          <h2>项目管理</h2>
+          <p>仅保留项目录入和项目台账。项目录入支持单点录入和 Excel 字段批量导入。</p>
+        </div>
         <div class="grid">
           <div class="stack">
-            <label for="project">项目</label>
-            <select id="project" onchange="loadItems()"></select>
+            <h3>项目录入 - 单点录入</h3>
+            <div><label for="pmName">项目名称</label><input id="pmName" value="新建工业炉项目"></div>
+            <div><label for="pmManager">项目经理</label><select id="pmManager"></select></div>
+            <div><label for="pmCreatedAt">创建时间</label><input id="pmCreatedAt" type="datetime-local"></div>
+            <div><label for="pmEnterprise">所属企业</label><select id="pmEnterprise"></select></div>
+            <div><label for="pmTerms">项目简介 / 技术条款</label><textarea id="pmTerms">项目用于工业炉设计计算与技术条款管理。</textarea></div>
+            <button onclick="createProjectManagementProject()">提交项目</button>
           </div>
           <div class="stack">
-            <label for="item">名目</label>
-            <select id="item" onchange="loadNodes()"></select>
+            <h3>项目录入 - 批量录入</h3>
+            <div class="meta">从 Excel 复制以下列后粘贴到文本框：项目名称, 项目经理, 创建时间, 所属企业, 项目简介 / 技术条款。每行一个项目。</div>
+            <textarea id="pmBatch">项目A,经理A,2026-06-04 09:00,企业A,技术条款A
+项目B,经理B,2026-06-04 10:00,企业B,技术条款B</textarea>
+            <button onclick="createProjectManagementProjectsBatch()">批量导入项目</button>
           </div>
         </div>
-        <div id="nodes" class="card-list" style="margin-top: 12px"></div>
+        <div style="margin-top: 18px">
+          <h3>项目查询</h3>
+          <div class="grid">
+            <div><label for="searchProjectName">项目名称</label><input id="searchProjectName" oninput="renderProjectLedger()" placeholder="支持模糊查询"></div>
+            <div><label for="searchProjectManager">项目经理</label><select id="searchProjectManager" onchange="renderProjectLedger()"></select></div>
+            <div><label for="searchEnterprise">所属企业</label><select id="searchEnterprise" onchange="renderProjectLedger()"></select></div>
+            <div><label for="smartSearch">智能查询</label><input id="smartSearch" oninput="renderProjectLedger()" placeholder="项目名称、项目经理、企业综合检索"></div>
+          </div>
+        </div>
+        <div style="margin-top: 18px">
+          <h3>项目台账</h3>
+          <div id="projectLedger" class="card-list"></div>
+        </div>
       </section>
-      <section>
-        <h2>升温计算</h2>
+
+      <section id="calc-item-management" class="view">
+        <div class="view-head">
+          <h2>计算名目管理</h2>
+          <p>按步进炉、辊底炉、环形炉分类创建计算名目，支持新增计算项、删除计算项和台账查看。</p>
+        </div>
         <div class="grid">
-          <div>
-            <label for="node">计算节点</label>
-            <select id="node"></select>
+          <div class="stack">
+            <h3>名目创建（分类）</h3>
+            <div><label for="ciProject">所属项目</label><select id="ciProject"></select></div>
+            <div><label for="ciFurnaceType">分类</label><select id="ciFurnaceType"><option value="walking_beam_furnace">步进炉</option><option value="roller_hearth_furnace">辊底炉</option><option value="ring_furnace">环形炉</option></select></div>
+            <div><label for="ciName">计算项名称</label><input id="ciName" value="热平衡"></div>
+            <div><label for="ciCode">计算项编码</label><input id="ciCode" value="CALC-001"></div>
+            <button onclick="createCalcItem()">新增计算项</button>
           </div>
-          <div>
-            <label for="scenario">快捷工况</label>
-            <select id="scenario" onchange="fillScenario()">
-              <option value="normal">正常可行工况</option>
-              <option value="violation">超限校核工况</option>
-            </select>
+          <div class="stack">
+            <h3>计算项示例</h3>
+            <div class="card"><strong>热平衡</strong><div class="meta">用于炉体热收入、热支出和能效分析。</div></div>
+            <div class="card"><strong>换热器</strong><div class="meta">用于换热设备参数校核和选型分析。</div></div>
+            <div class="card"><strong>闸阀</strong><div class="meta">用于阀门类设备计算与校核。</div></div>
           </div>
         </div>
-        <div style="margin-top: 12px">
-          <label for="inputs">输入参数 JSON</label>
-          <textarea id="inputs"></textarea>
+        <div style="margin-top: 18px">
+          <h3>计算名目台账</h3>
+          <div id="calcItemLedger" class="card-list"></div>
         </div>
-        <div class="row" style="margin-top: 12px">
-          <button onclick="runExecution()">执行计算</button>
-          <button class="secondary" onclick="loadExecutions()">刷新执行记录</button>
+      </section>
+
+      <section id="calculation" class="view">
+        <div class="view-head"><h2>计算执行</h2><p>选择项目、名目、计算树节点和工况参数，生成执行记录与结果快照。</p></div>
+        <div class="grid">
+          <div><label for="project">项目</label><select id="project" onchange="loadItems()"></select></div>
+          <div><label for="item">名目</label><select id="item" onchange="loadNodes()"></select></div>
+          <div><label for="node">计算节点</label><select id="node"></select></div>
+          <div><label for="scenario">快捷工况</label><select id="scenario" onchange="fillScenario()"><option value="normal">正常可行工况</option><option value="violation">超限校核工况</option></select></div>
         </div>
+        <div style="margin-top: 16px"><h3>计算树节点</h3><div id="nodes" class="card-list"></div></div>
+        <div style="margin-top: 12px"><label for="inputs">输入参数 JSON</label><textarea id="inputs"></textarea></div>
+        <div class="row" style="margin-top: 12px"><button onclick="runExecution()">执行计算</button><button class="secondary" onclick="loadExecutions()">刷新执行记录</button></div>
         <div id="executions" class="card-list" style="margin-top: 12px"></div>
       </section>
-      <section>
-        <h2>审批与报告</h2>
-        <div class="grid">
-          <div>
-            <label for="executionId">执行 ID</label>
-            <input id="executionId" placeholder="执行后自动填充">
-          </div>
-          <div>
-            <label for="approvalId">审批 ID</label>
-            <input id="approvalId" placeholder="提交审批后自动填充">
-          </div>
-        </div>
-        <div class="row" style="margin-top: 12px">
-          <button onclick="submitApproval()">提交审批</button>
-          <button class="green" onclick="approve()">审批通过</button>
-          <button class="amber" onclick="returnApproval()">退回</button>
-        </div>
-        <div class="row" style="margin-top: 12px">
-          <button onclick="createReport()">生成报告</button>
-          <button class="secondary" onclick="downloadReport()">下载报告文本</button>
-        </div>
-      </section>
-      <section>
-        <h2>横向对比</h2>
-        <div>
-          <label for="resultIds">结果 ID，逗号分隔</label>
-          <input id="resultIds" placeholder="执行记录会自动填充最近结果">
-        </div>
-        <div class="row" style="margin-top: 12px">
-          <button onclick="createComparison()">创建对比组</button>
-          <button class="secondary" onclick="loadComparison()">查看对比结果</button>
-        </div>
+
+      <section id="comparison-view" class="view">
+        <div class="view-head"><h2>横向对比</h2><p>把多个结果快照放入同一对比组，用于查看可行性和关键输出差异。</p></div>
+        <div><label for="resultIds">结果 ID，逗号分隔</label><input id="resultIds" placeholder="执行记录会自动填充最近结果"></div>
+        <div class="row" style="margin-top: 12px"><button onclick="createComparison()">创建对比组</button><button class="secondary" onclick="loadComparison()">查看对比结果</button></div>
         <div id="comparison" style="margin-top: 12px"></div>
       </section>
-      <section>
-        <h2>资料管理</h2>
-        <div class="grid">
-          <div>
-            <label for="artifactType">资料类型</label>
-            <select id="artifactType">
-              <option value="site_feedback">现场反馈</option>
-              <option value="drawing_review">审图单</option>
-              <option value="technical_attachment">技术附件</option>
-              <option value="drawing_catalog">图纸目录</option>
-            </select>
-          </div>
-          <div>
-            <label for="artifactTitle">标题</label>
-            <input id="artifactTitle" value="装出钢机现场反馈">
-          </div>
+
+      <section id="approval" class="view">
+        <div class="view-head"><h2>审批报告</h2><p>围绕单次执行记录完成送审、审批、退回、正式报告生成和下载。</p></div>
+        <div class="grid"><div><label for="executionId">执行 ID</label><input id="executionId" placeholder="执行后自动填充"></div><div><label for="approvalId">审批 ID</label><input id="approvalId" placeholder="提交审批后自动填充"></div></div>
+        <div class="row" style="margin-top: 12px"><button onclick="submitApproval()">提交审批</button><button class="green" onclick="approve()">审批通过</button><button class="amber" onclick="returnApproval()">退回</button></div>
+        <div class="row" style="margin-top: 12px"><button onclick="createReport()">生成报告</button><button class="secondary" onclick="downloadReport()">下载报告文本</button></div>
+      </section>
+
+      <section id="digital-twin" class="view">
+        <div class="view-head"><h2>数字孪生</h2><p>围绕工业炉设备建立设计、仿真、优化和运行分析的统一入口。</p></div>
+        <div class="module-grid">
+          <div class="card"><strong>二维设计开发</strong><div class="meta">承载二维总图、布置图、接口图和设计审查资料入口。</div></div>
+          <div class="card"><strong>三维设计开发</strong><div class="meta">承载三维模型、设备装配、空间校核和模型版本管理入口。</div></div>
+          <div class="card"><strong>有限元优化</strong><div class="meta">承载结构强度、热应力、变形分析和结构优化入口。</div></div>
+          <div class="card"><strong>CFD优化</strong><div class="meta">承载流场、温度场、燃烧组织和能效优化入口。</div></div>
         </div>
-        <div style="margin-top: 12px">
-          <label for="artifactContent">资料内容</label>
-          <textarea id="artifactContent">装出钢机现场安装空间与计算假设需要联合复核，审图意见要求确认接口尺寸，技术附件提供了设备参数版本。</textarea>
-        </div>
-        <div class="row" style="margin-top: 12px">
-          <button onclick="createArtifact()">新增资料</button>
-          <button onclick="createArtifactsBatch()">按项目批量录入</button>
-          <button class="secondary" onclick="loadArtifacts()">刷新资料</button>
-        </div>
-        <div style="margin-top: 12px">
-          <label for="batchArtifacts">批量资料 JSON，支持项目级录入，`project_item_id` 可为空</label>
-          <textarea id="batchArtifacts"></textarea>
-        </div>
+      </section>
+
+      <section id="artifact-view" class="view">
+        <div class="view-head"><h2>项目资料</h2><p>录入现场反馈、审图单、技术附件和图纸目录，供后续 AI 联合分析引用。</p></div>
+        <div class="grid"><div><label for="artifactType">资料类型</label><select id="artifactType"><option value="site_feedback">现场反馈</option><option value="drawing_review">审图单</option><option value="technical_attachment">技术附件</option><option value="drawing_catalog">图纸目录</option></select></div><div><label for="artifactTitle">标题</label><input id="artifactTitle" value="装出钢机现场反馈"></div></div>
+        <div style="margin-top: 12px"><label for="artifactContent">资料内容</label><textarea id="artifactContent">装出钢机现场安装空间与计算假设需要联合复核，审图意见要求确认接口尺寸，技术附件提供了设备参数版本。</textarea></div>
+        <div class="row" style="margin-top: 12px"><button onclick="createArtifact()">新增资料</button><button onclick="createArtifactsBatch()">按项目批量录入</button><button class="secondary" onclick="loadArtifacts()">刷新资料</button></div>
+        <div style="margin-top: 12px"><label for="batchArtifacts">批量资料 JSON，支持项目级录入，`project_item_id` 可为空</label><textarea id="batchArtifacts"></textarea></div>
         <div id="artifacts" class="card-list" style="margin-top: 12px"></div>
       </section>
-      <section>
-        <h2>AI 联合分析</h2>
-        <div class="grid">
-          <div>
-            <label for="equipmentName">设备名称</label>
-            <input id="equipmentName" value="装出钢机">
-          </div>
-          <div>
-            <label for="artifactIds">资料 ID，逗号分隔</label>
-            <input id="artifactIds" placeholder="资料列表会自动填充">
-          </div>
-        </div>
-        <div style="margin-top: 12px">
-          <label for="aiQuestion">分析问题</label>
-          <textarea id="aiQuestion">请联合分析同一装出钢机的计算结果、现场反馈、审图单、技术附件和图纸目录，并按物质流、能量流、信息流三个维度输出风险点、矛盾点和建议。</textarea>
-        </div>
+
+      <section id="ai-view" class="view">
+        <div class="view-head"><h2>AI 联合分析</h2><p>联合计算记录、现场反馈、审图单、技术附件和图纸目录，输出物质流、能量流、信息流分析。</p></div>
+        <div class="grid"><div><label for="equipmentName">设备名称</label><input id="equipmentName" value="装出钢机"></div><div><label for="artifactIds">资料 ID，逗号分隔</label><input id="artifactIds" placeholder="资料列表会自动填充"></div></div>
+        <div style="margin-top: 12px"><label for="aiQuestion">分析问题</label><textarea id="aiQuestion">请联合分析同一装出钢机的计算结果、现场反馈、审图单、技术附件和图纸目录，并按物质流、能量流、信息流三个维度输出风险点、矛盾点和建议。</textarea></div>
         <button style="margin-top: 12px" onclick="runAiAnalysis()">启动大模型 API 联合分析</button>
         <div id="analyses" class="card-list" style="margin-top: 12px"></div>
       </section>
-    </div>
-  </main>
+      <pre id="log">等待操作...</pre>
+    </main>
+  </div>
   <script>
-    const state = { projects: [], items: [], nodes: [], executions: [], artifacts: [], comparisonId: null, reportId: null };
-    const normalInputs = {
-      material_type: "carbon_steel",
-      workpiece_thickness_mm: 120,
-      initial_temp_c: 25,
-      target_discharge_temp_c: 1180,
-      residence_time_min: 180
-    };
-    const violationInputs = {
-      material_type: "carbon_steel",
-      workpiece_thickness_mm: 240,
-      initial_temp_c: 25,
-      target_discharge_temp_c: 1180,
-      residence_time_min: 45
-    };
+    const state = { projects: [], managedProjects: [], editingProjectId: null, calcItems: [], items: [], nodes: [], executions: [], artifacts: [], options: { project_managers: [], enterprises: [] }, comparisonId: null, reportId: null };
+    const normalInputs = { material_type: "carbon_steel", workpiece_thickness_mm: 120, initial_temp_c: 25, target_discharge_temp_c: 1180, residence_time_min: 180 };
+    const violationInputs = { material_type: "carbon_steel", workpiece_thickness_mm: 240, initial_temp_c: 25, target_discharge_temp_c: 1180, residence_time_min: 45 };
     function roleHeaders() { return { "X-Role": document.getElementById("role").value }; }
     function show(data) { document.getElementById("log").textContent = typeof data === "string" ? data : JSON.stringify(data, null, 2); }
-    function escapeHtml(value) {
-      return String(value ?? "").replace(/[&<>'"]/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[char]));
-    }
-    async function api(path, options = {}) {
-      const response = await fetch(path, { ...options, headers: { "Content-Type": "application/json", ...roleHeaders(), ...(options.headers || {}) } });
-      const type = response.headers.get("content-type") || "";
-      const body = type.includes("application/json") ? await response.json() : await response.text();
-      if (!response.ok) throw body;
-      return body;
-    }
-    function fillSelect(id, rows, label) {
-      document.getElementById(id).innerHTML = rows.map(row => `<option value="${row.id}">${label(row)}</option>`).join("");
-    }
+    function escapeHtml(value) { return String(value ?? "").replace(/[&<>'"]/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[char])); }
+    function showView(id) { document.querySelectorAll(".view").forEach(view => view.classList.toggle("active", view.id === id)); document.querySelectorAll(".nav button").forEach(button => button.classList.toggle("active", button.dataset.view === id)); }
+    async function api(path, options = {}) { const response = await fetch(path, { ...options, headers: { "Content-Type": "application/json", ...roleHeaders(), ...(options.headers || {}) } }); const type = response.headers.get("content-type") || ""; const body = type.includes("application/json") ? await response.json() : await response.text(); if (!response.ok) throw body; return body; }
+    function fillSelect(id, rows, label) { document.getElementById(id).innerHTML = rows.map(row => `<option value="${row.id}">${label(row)}</option>`).join(""); }
+    function fillTextSelect(id, rows, placeholder) { document.getElementById(id).innerHTML = `${placeholder ? `<option value="">${placeholder}</option>` : ""}${rows.map(row => `<option value="${escapeHtml(row)}">${escapeHtml(row)}</option>`).join("")}`; }
+    function furnaceName(value) { return ({ walking_beam_furnace: "步进炉", roller_hearth_furnace: "辊底炉", ring_furnace: "环形炉" }[value] || value); }
+    function parseBatchRows(value) { return value.split(/\n+/).map(row => row.trim()).filter(Boolean).map(row => { const [project_name, project_manager, created_at, enterprise, ...terms] = row.split(",").map(cell => cell.trim()); return { project_name, project_manager, created_at, enterprise, technical_terms: terms.join(",") }; }); }
     async function seedDemo() { try { show(await api("/api/seed", { method: "POST" })); await loadAll(); } catch (error) { show(error); } }
-    async function loadAll() { await loadProjects(); await loadExecutions(); await loadArtifacts(); }
-    async function loadProjects() {
-      state.projects = await api("/api/projects");
-      fillSelect("project", state.projects, row => `${row.code} | ${row.name}`);
-      await loadItems();
+    async function loadAll() { await loadProjectOptions(); await loadProjects(); await loadProjectLedger(); await loadCalcItems(); await loadExecutions(); await loadArtifacts(); }
+    async function loadProjectOptions() { state.options = await api("/api/project-management/options"); fillTextSelect("pmManager", state.options.project_managers, ""); fillTextSelect("pmEnterprise", state.options.enterprises, ""); fillTextSelect("searchProjectManager", state.options.project_managers, "全部项目经理"); fillTextSelect("searchEnterprise", state.options.enterprises, "全部企业"); }
+    async function loadProjects() { state.projects = await api("/api/projects"); fillSelect("ciProject", state.projects, row => `${row.code} | ${row.name}`); fillSelect("project", state.projects, row => `${row.code} | ${row.name}`); await loadItems(); }
+    async function loadItems() { const projectId = document.getElementById("project").value; if (!projectId) return; state.items = await api(`/api/projects/${projectId}/items`); fillSelect("item", state.items, row => `${row.code} | ${row.name}`); await loadNodes(); }
+    async function loadNodes() { const itemId = document.getElementById("item").value; if (!itemId) return; state.nodes = await api(`/api/items/${itemId}/nodes`); document.getElementById("nodes").innerHTML = state.nodes.map(node => `<div class="card"><strong>${escapeHtml(node.name)}</strong><span class="pill">${escapeHtml(node.node_type)}</span><span class="meta">节点 ID: ${node.id}，模板 ID: ${node.template_id || "无"}</span></div>`).join(""); fillSelect("node", state.nodes.filter(node => node.node_type === "calc"), row => `${row.id} | ${row.name}`); }
+    async function loadProjectLedger() { state.managedProjects = await api("/api/project-management/projects"); renderProjectLedger(); }
+    function renderProjectLedger() {
+      const name = (document.getElementById("searchProjectName")?.value || "").trim().toLowerCase();
+      const manager = document.getElementById("searchProjectManager")?.value || "";
+      const enterprise = document.getElementById("searchEnterprise")?.value || "";
+      const smart = (document.getElementById("smartSearch")?.value || "").trim().toLowerCase();
+      const rows = state.managedProjects.filter(row => {
+        const text = `${row.project_name} ${row.project_manager} ${row.enterprise} ${row.technical_terms}`.toLowerCase();
+        return (!name || row.project_name.toLowerCase().includes(name)) && (!manager || row.project_manager === manager) && (!enterprise || row.enterprise === enterprise) && (!smart || text.includes(smart));
+      });
+      document.getElementById("projectLedger").innerHTML = rows.map(row => state.editingProjectId === row.id ? renderProjectEditor(row) : `<div class="card"><strong>${escapeHtml(row.project_name)}</strong><span class="pill">${escapeHtml(row.enterprise || "未填企业")}</span><div class="meta">项目经理: ${escapeHtml(row.project_manager || "未填")}，创建时间: ${escapeHtml(row.created_at)}</div><div class="meta">${escapeHtml(row.technical_terms || "未填技术条款")}</div><button class="secondary" onclick="editProject(${row.id})">编辑</button></div>`).join("");
     }
-    async function loadItems() {
-      const projectId = document.getElementById("project").value;
-      if (!projectId) return;
-      state.items = await api(`/api/projects/${projectId}/items`);
-      fillSelect("item", state.items, row => `${row.code} | ${row.name}`);
-      await loadNodes();
+    function renderProjectEditor(row) {
+      return `<div class="card stack"><div><label>项目名称</label><input id="editProjectName" value="${escapeHtml(row.project_name)}"></div><div><label>项目经理</label><select id="editProjectManager">${state.options.project_managers.map(manager => `<option value="${escapeHtml(manager)}" ${manager === row.project_manager ? "selected" : ""}>${escapeHtml(manager)}</option>`).join("")}</select></div><div><label>创建时间</label><input id="editProjectCreatedAt" value="${escapeHtml(row.created_at)}"></div><div><label>所属企业</label><select id="editProjectEnterprise">${state.options.enterprises.map(enterprise => `<option value="${escapeHtml(enterprise)}" ${enterprise === row.enterprise ? "selected" : ""}>${escapeHtml(enterprise)}</option>`).join("")}</select></div><div><label>项目简介 / 技术条款</label><textarea id="editProjectTerms">${escapeHtml(row.technical_terms)}</textarea></div><div class="row"><button onclick="saveProjectEdit(${row.id})">保存编辑</button><button class="secondary" onclick="cancelProjectEdit()">取消</button></div></div>`;
     }
-    async function loadNodes() {
-      const itemId = document.getElementById("item").value;
-      if (!itemId) return;
-      state.nodes = await api(`/api/items/${itemId}/nodes`);
-      document.getElementById("nodes").innerHTML = state.nodes.map(node => `<div class="card"><strong>${escapeHtml(node.name)}</strong><span class="pill">${escapeHtml(node.node_type)}</span><span class="meta">节点 ID: ${node.id}，模板 ID: ${node.template_id || "无"}</span></div>`).join("");
-      fillSelect("node", state.nodes.filter(node => node.node_type === "calc"), row => `${row.id} | ${row.name}`);
-    }
-    function fillScenario() {
-      const value = document.getElementById("scenario").value;
-      document.getElementById("inputs").value = JSON.stringify(value === "normal" ? normalInputs : violationInputs, null, 2);
-    }
-    function fillBatchArtifacts() {
-      document.getElementById("batchArtifacts").value = JSON.stringify([
-        { project_item_id: null, artifact_type: "site_feedback", title: "装出钢机现场反馈", source_code: "FB-001", content: "现场反馈：装出钢机安装空间需与计算假设联合复核。" },
-        { project_item_id: null, artifact_type: "drawing_review", title: "装出钢机审图单", source_code: "DR-001", content: "审图单：要求确认装出钢机接口尺寸和土建预留条件。" },
-        { project_item_id: null, artifact_type: "technical_attachment", title: "装出钢机技术附件", source_code: "TA-001", content: "技术附件：包含装出钢机电机功率、行程、速度和载荷参数。" },
-        { project_item_id: null, artifact_type: "drawing_catalog", title: "装出钢机图纸目录", source_code: "DC-001", content: "图纸目录：包含总图、基础图、接口图和安装图版本清单。" }
-      ], null, 2);
-    }
-    async function runExecution() {
-      try {
-        const nodeId = document.getElementById("node").value;
-        const inputs = JSON.parse(document.getElementById("inputs").value);
-        const result = await api(`/api/nodes/${nodeId}/executions`, { method: "POST", body: JSON.stringify({ inputs }) });
-        show(result);
-        await loadExecutions();
-      } catch (error) { show(error); }
-    }
-    async function loadExecutions() {
-      state.executions = await api("/api/executions");
-      document.getElementById("executions").innerHTML = state.executions.map(row => `<div class="card"><strong>执行 ${row.id}</strong><span class="pill">${escapeHtml(row.status)}</span><span class="pill ${row.feasible ? "ok" : "bad"}">${row.feasible === null ? "无结果" : row.feasible ? "可行" : "不可行"}</span><div class="meta">结果 ID: ${row.result_id || "无"}，耗时: ${row.duration_ms || 0} ms</div></div>`).join("");
-      if (state.executions[0]) document.getElementById("executionId").value = state.executions[0].id;
-      const ids = state.executions.map(row => row.result_id).filter(Boolean).slice(0, 2);
-      if (ids.length) document.getElementById("resultIds").value = ids.join(",");
-    }
-    async function submitApproval() {
-      try {
-        const result = await api(`/api/executions/${document.getElementById("executionId").value}/approval`, { method: "POST" });
-        document.getElementById("approvalId").value = result.id;
-        show(result);
-      } catch (error) { show(error); }
-    }
-    async function approve() {
-      try { show(await api(`/api/approvals/${document.getElementById("approvalId").value}/approve`, { method: "POST" })); } catch (error) { show(error); }
-    }
-    async function returnApproval() {
-      try { show(await api(`/api/approvals/${document.getElementById("approvalId").value}/return`, { method: "POST" })); } catch (error) { show(error); }
-    }
-    async function createReport() {
-      try {
-        const result = await api(`/api/executions/${document.getElementById("executionId").value}/reports`, { method: "POST" });
-        state.reportId = result.id;
-        show(result);
-      } catch (error) { show(error); }
-    }
-    async function downloadReport() {
-      try {
-        if (!state.reportId) throw "请先生成报告";
-        show(await api(`/api/reports/${state.reportId}/download`, { headers: roleHeaders() }));
-      } catch (error) { show(error); }
-    }
-    async function createComparison() {
-      try {
-        const resultIds = document.getElementById("resultIds").value.split(",").map(value => Number(value.trim())).filter(Boolean);
-        const result = await api("/api/comparisons", { method: "POST", body: JSON.stringify({ name: "V1 升温计算横向对比", step_type: "temp_profile", result_ids: resultIds }) });
-        state.comparisonId = result.id;
-        show(result);
-      } catch (error) { show(error); }
-    }
-    async function loadComparison() {
-      try {
-        if (!state.comparisonId) throw "请先创建对比组";
-        const result = await api(`/api/comparisons/${state.comparisonId}`);
-        document.getElementById("comparison").innerHTML = result.results.map(row => `<div class="card"><strong>结果 ${row.result_id}</strong><span class="pill ${row.feasible ? "ok" : "bad"}">${row.feasible ? "可行" : "不可行"}</span><div class="meta">最终平均温度: ${escapeHtml(row.outputs.final_average_temp_c)} ℃，表里温差: ${escapeHtml(row.outputs.surface_core_delta_c)} ℃</div></div>`).join("");
-        show(result);
-      } catch (error) { show(error); }
-    }
-    async function createArtifact() {
-      try {
-        const projectId = document.getElementById("project").value;
-        const itemId = Number(document.getElementById("item").value);
-        const result = await api(`/api/projects/${projectId}/artifacts`, {
-          method: "POST",
-          body: JSON.stringify({
-            project_item_id: itemId,
-            artifact_type: document.getElementById("artifactType").value,
-            title: document.getElementById("artifactTitle").value,
-            source_code: "UI-DEMO",
-            content: document.getElementById("artifactContent").value
-          })
-        });
-        show(result);
-        await loadArtifacts();
-      } catch (error) { show(error); }
-    }
-    async function createArtifactsBatch() {
-      try {
-        const projectId = document.getElementById("project").value;
-        const items = JSON.parse(document.getElementById("batchArtifacts").value);
-        const result = await api(`/api/projects/${projectId}/artifacts/batch`, {
-          method: "POST",
-          body: JSON.stringify({ items })
-        });
-        show(result);
-        await loadArtifacts();
-      } catch (error) { show(error); }
-    }
-    async function loadArtifacts() {
-      const projectId = document.getElementById("project").value;
-      if (!projectId) return;
-      const itemId = document.getElementById("item").value;
-      state.artifacts = await api(`/api/projects/${projectId}/artifacts?project_item_id=${itemId}`);
-      document.getElementById("artifacts").innerHTML = state.artifacts.map(row => `<div class="card"><strong>${escapeHtml(row.title)}</strong><span class="pill">${escapeHtml(row.type_name)}</span><div class="meta">资料 ID: ${row.id}，来源: ${escapeHtml(row.source_code || "无")}</div><div class="meta">${escapeHtml(row.content)}</div></div>`).join("");
-      if (state.artifacts.length) document.getElementById("artifactIds").value = state.artifacts.map(row => row.id).join(",");
-    }
-    async function runAiAnalysis() {
-      try {
-        const projectId = document.getElementById("project").value;
-        const itemId = Number(document.getElementById("item").value);
-        const executionIds = document.getElementById("executionId").value ? [Number(document.getElementById("executionId").value)] : [];
-        const artifactIds = document.getElementById("artifactIds").value.split(",").map(value => Number(value.trim())).filter(Boolean);
-        const result = await api(`/api/projects/${projectId}/ai-analyses`, {
-          method: "POST",
-          body: JSON.stringify({
-            project_item_id: itemId,
-            equipment_name: document.getElementById("equipmentName").value,
-            execution_ids: executionIds,
-            artifact_ids: artifactIds,
-            question: document.getElementById("aiQuestion").value
-          })
-        });
-        const flows = result.result.three_flows ? `<div class="meta">物质流: ${escapeHtml((result.result.three_flows.material_flow || []).join("；"))}</div><div class="meta">能量流: ${escapeHtml((result.result.three_flows.energy_flow || []).join("；"))}</div><div class="meta">信息流: ${escapeHtml((result.result.three_flows.information_flow || []).join("；"))}</div>` : "";
-        document.getElementById("analyses").innerHTML = `<div class="card"><strong>分析 ${result.id}</strong><span class="pill">${escapeHtml(result.provider)}</span><span class="pill">${escapeHtml(result.status)}</span><div class="meta">${escapeHtml(result.result.summary || "已返回分析结果")}</div>${flows}</div>`;
-        show(result);
-      } catch (error) { show(error); }
-    }
+    function editProject(id) { state.editingProjectId = id; renderProjectLedger(); }
+    function cancelProjectEdit() { state.editingProjectId = null; renderProjectLedger(); }
+    async function loadCalcItems() { state.calcItems = await api("/api/calc-items"); document.getElementById("calcItemLedger").innerHTML = state.calcItems.map(row => `<div class="card"><strong>${escapeHtml(row.code)} | ${escapeHtml(row.name)}</strong><span class="pill">${escapeHtml(furnaceName(row.furnace_type))}</span><div class="meta">项目 ID: ${row.project_id}</div><button class="danger" onclick="deleteCalcItem(${row.id})">删除计算项</button></div>`).join(""); }
+    async function createProjectManagementProject() { try { const result = await api("/api/project-management/projects", { method: "POST", body: JSON.stringify({ project_name: document.getElementById("pmName").value, project_manager: document.getElementById("pmManager").value, created_at: document.getElementById("pmCreatedAt").value, enterprise: document.getElementById("pmEnterprise").value, technical_terms: document.getElementById("pmTerms").value }) }); show(result); await loadAll(); } catch (error) { show(error); } }
+    async function saveProjectEdit(id) { try { const result = await api(`/api/project-management/projects/${id}`, { method: "PUT", body: JSON.stringify({ project_name: document.getElementById("editProjectName").value, project_manager: document.getElementById("editProjectManager").value, created_at: document.getElementById("editProjectCreatedAt").value, enterprise: document.getElementById("editProjectEnterprise").value, technical_terms: document.getElementById("editProjectTerms").value }) }); state.editingProjectId = null; show(result); await loadAll(); } catch (error) { show(error); } }
+    async function createProjectManagementProjectsBatch() { try { const result = await api("/api/project-management/projects/batch", { method: "POST", body: JSON.stringify({ items: parseBatchRows(document.getElementById("pmBatch").value) }) }); show(result); await loadAll(); } catch (error) { show(error); } }
+    async function createCalcItem() { try { const projectId = document.getElementById("ciProject").value; const result = await api(`/api/projects/${projectId}/items`, { method: "POST", body: JSON.stringify({ code: document.getElementById("ciCode").value, name: document.getElementById("ciName").value, furnace_type: document.getElementById("ciFurnaceType").value, business_scope: "计算名目管理", design_stage: "V1", status: "ACTIVE" }) }); show(result); await loadCalcItems(); } catch (error) { show(error); } }
+    async function deleteCalcItem(id) { try { show(await api(`/api/calc-items/${id}`, { method: "DELETE" })); await loadCalcItems(); } catch (error) { show(error); } }
+    function fillScenario() { const value = document.getElementById("scenario").value; document.getElementById("inputs").value = JSON.stringify(value === "normal" ? normalInputs : violationInputs, null, 2); }
+    function fillBatchArtifacts() { document.getElementById("batchArtifacts").value = JSON.stringify([{ project_item_id: null, artifact_type: "site_feedback", title: "装出钢机现场反馈", source_code: "FB-001", content: "现场反馈：装出钢机安装空间需与计算假设联合复核。" }, { project_item_id: null, artifact_type: "drawing_review", title: "装出钢机审图单", source_code: "DR-001", content: "审图单：要求确认装出钢机接口尺寸和土建预留条件。" }, { project_item_id: null, artifact_type: "technical_attachment", title: "装出钢机技术附件", source_code: "TA-001", content: "技术附件：包含装出钢机电机功率、行程、速度和载荷参数。" }, { project_item_id: null, artifact_type: "drawing_catalog", title: "装出钢机图纸目录", source_code: "DC-001", content: "图纸目录：包含总图、基础图、接口图和安装图版本清单。" }], null, 2); }
+    async function runExecution() { try { const nodeId = document.getElementById("node").value; const inputs = JSON.parse(document.getElementById("inputs").value); const result = await api(`/api/nodes/${nodeId}/executions`, { method: "POST", body: JSON.stringify({ inputs }) }); show(result); await loadExecutions(); } catch (error) { show(error); } }
+    async function loadExecutions() { state.executions = await api("/api/executions"); document.getElementById("executions").innerHTML = state.executions.map(row => `<div class="card"><strong>执行 ${row.id}</strong><span class="pill">${escapeHtml(row.status)}</span><span class="pill ${row.feasible ? "ok" : "bad"}">${row.feasible === null ? "无结果" : row.feasible ? "可行" : "不可行"}</span><div class="meta">结果 ID: ${row.result_id || "无"}，耗时: ${row.duration_ms || 0} ms</div></div>`).join(""); if (state.executions[0]) document.getElementById("executionId").value = state.executions[0].id; const ids = state.executions.map(row => row.result_id).filter(Boolean).slice(0, 2); if (ids.length) document.getElementById("resultIds").value = ids.join(","); }
+    async function submitApproval() { try { const result = await api(`/api/executions/${document.getElementById("executionId").value}/approval`, { method: "POST" }); document.getElementById("approvalId").value = result.id; show(result); } catch (error) { show(error); } }
+    async function approve() { try { show(await api(`/api/approvals/${document.getElementById("approvalId").value}/approve`, { method: "POST" })); } catch (error) { show(error); } }
+    async function returnApproval() { try { show(await api(`/api/approvals/${document.getElementById("approvalId").value}/return`, { method: "POST" })); } catch (error) { show(error); } }
+    async function createReport() { try { const result = await api(`/api/executions/${document.getElementById("executionId").value}/reports`, { method: "POST" }); state.reportId = result.id; show(result); } catch (error) { show(error); } }
+    async function downloadReport() { try { if (!state.reportId) throw "请先生成报告"; show(await api(`/api/reports/${state.reportId}/download`, { headers: roleHeaders() })); } catch (error) { show(error); } }
+    async function createComparison() { try { const resultIds = document.getElementById("resultIds").value.split(",").map(value => Number(value.trim())).filter(Boolean); const result = await api("/api/comparisons", { method: "POST", body: JSON.stringify({ name: "V1 升温计算横向对比", step_type: "temp_profile", result_ids: resultIds }) }); state.comparisonId = result.id; show(result); } catch (error) { show(error); } }
+    async function loadComparison() { try { if (!state.comparisonId) throw "请先创建对比组"; const result = await api(`/api/comparisons/${state.comparisonId}`); document.getElementById("comparison").innerHTML = result.results.map(row => `<div class="card"><strong>结果 ${row.result_id}</strong><span class="pill ${row.feasible ? "ok" : "bad"}">${row.feasible ? "可行" : "不可行"}</span><div class="meta">最终平均温度: ${escapeHtml(row.outputs.final_average_temp_c)} ℃，表里温差: ${escapeHtml(row.outputs.surface_core_delta_c)} ℃</div></div>`).join(""); show(result); } catch (error) { show(error); } }
+    async function createArtifact() { try { const projectId = document.getElementById("project").value; const itemId = Number(document.getElementById("item").value); const result = await api(`/api/projects/${projectId}/artifacts`, { method: "POST", body: JSON.stringify({ project_item_id: itemId, artifact_type: document.getElementById("artifactType").value, title: document.getElementById("artifactTitle").value, source_code: "UI-DEMO", content: document.getElementById("artifactContent").value }) }); show(result); await loadArtifacts(); } catch (error) { show(error); } }
+    async function createArtifactsBatch() { try { const projectId = document.getElementById("project").value; const items = JSON.parse(document.getElementById("batchArtifacts").value); const result = await api(`/api/projects/${projectId}/artifacts/batch`, { method: "POST", body: JSON.stringify({ items }) }); show(result); await loadArtifacts(); } catch (error) { show(error); } }
+    async function loadArtifacts() { const projectId = document.getElementById("project").value; if (!projectId) return; const itemId = document.getElementById("item").value; state.artifacts = await api(`/api/projects/${projectId}/artifacts?project_item_id=${itemId}`); document.getElementById("artifacts").innerHTML = state.artifacts.map(row => `<div class="card"><strong>${escapeHtml(row.title)}</strong><span class="pill">${escapeHtml(row.type_name)}</span><div class="meta">资料 ID: ${row.id}，来源: ${escapeHtml(row.source_code || "无")}</div><div class="meta">${escapeHtml(row.content)}</div></div>`).join(""); if (state.artifacts.length) document.getElementById("artifactIds").value = state.artifacts.map(row => row.id).join(","); }
+    async function runAiAnalysis() { try { const projectId = document.getElementById("project").value; const itemId = Number(document.getElementById("item").value); const executionIds = document.getElementById("executionId").value ? [Number(document.getElementById("executionId").value)] : []; const artifactIds = document.getElementById("artifactIds").value.split(",").map(value => Number(value.trim())).filter(Boolean); const result = await api(`/api/projects/${projectId}/ai-analyses`, { method: "POST", body: JSON.stringify({ project_item_id: itemId, equipment_name: document.getElementById("equipmentName").value, execution_ids: executionIds, artifact_ids: artifactIds, question: document.getElementById("aiQuestion").value }) }); const flows = result.result.three_flows ? `<div class="meta">物质流: ${escapeHtml((result.result.three_flows.material_flow || []).join("；"))}</div><div class="meta">能量流: ${escapeHtml((result.result.three_flows.energy_flow || []).join("；"))}</div><div class="meta">信息流: ${escapeHtml((result.result.three_flows.information_flow || []).join("；"))}</div>` : ""; document.getElementById("analyses").innerHTML = `<div class="card"><strong>分析 ${result.id}</strong><span class="pill">${escapeHtml(result.provider)}</span><span class="pill">${escapeHtml(result.status)}</span><div class="meta">${escapeHtml(result.result.summary || "已返回分析结果")}</div>${flows}</div>`; show(result); } catch (error) { show(error); } }
     fillScenario();
     fillBatchArtifacts();
     loadAll().catch(show);

@@ -14,7 +14,18 @@ from app import models
 from app.ai_client import run_joint_analysis
 from app.db import get_db, init_db
 from app.executors import run_template
-from app.schemas import AiAnalysisRequest, ArtifactBatchCreate, ArtifactCreate, ExecutionRequest, ExecutorResponse, ProjectCreate, ProjectItemCreate, TemplateCreate
+from app.schemas import (
+    AiAnalysisRequest,
+    ArtifactBatchCreate,
+    ArtifactCreate,
+    ExecutionRequest,
+    ExecutorResponse,
+    ProjectCreate,
+    ProjectItemCreate,
+    ProjectManagementBatchCreate,
+    ProjectManagementCreate,
+    TemplateCreate,
+)
 from app.seed import seed_all
 
 
@@ -47,6 +58,9 @@ ARTIFACT_TYPES = {
     "technical_attachment": "技术附件",
     "drawing_catalog": "图纸目录",
 }
+
+PROJECT_MANAGER_CANDIDATES = ["张工", "李工", "王工", "赵工"]
+ENTERPRISE_CANDIDATES = ["宝山钢铁股份有限公司", "鞍钢集团工程技术有限公司", "首钢集团有限公司", "河钢集团有限公司"]
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -91,6 +105,11 @@ def list_projects(db: Session = Depends(get_db)) -> list[dict]:
     return [{"id": p.id, "code": p.code, "name": p.name, "status": p.status} for p in projects]
 
 
+@app.get("/api/project-management/options")
+def get_project_management_options() -> dict[str, list[str]]:
+    return {"project_managers": PROJECT_MANAGER_CANDIDATES, "enterprises": ENTERPRISE_CANDIDATES}
+
+
 @app.post("/api/projects")
 def create_project(payload: ProjectCreate, db: Session = Depends(get_db)) -> dict:
     existing = db.query(models.Project).filter_by(code=payload.code).one_or_none()
@@ -101,6 +120,84 @@ def create_project(payload: ProjectCreate, db: Session = Depends(get_db)) -> dic
     db.commit()
     db.refresh(project)
     return {"id": project.id, "code": project.code, "name": project.name}
+
+
+def _project_description(project_manager: str, enterprise: str, technical_terms: str | None, created_at: str | None = None) -> str:
+    return json.dumps(
+        {"project_manager": project_manager, "enterprise": enterprise, "created_at_input": created_at or "", "technical_terms": technical_terms or ""},
+        ensure_ascii=False,
+    )
+
+
+def _project_management_row(project: models.Project) -> dict:
+    details = {}
+    if project.description:
+        try:
+            details = json.loads(project.description)
+        except json.JSONDecodeError:
+            details = {"technical_terms": project.description}
+    return {
+        "id": project.id,
+        "project_name": project.name,
+        "project_manager": details.get("project_manager", ""),
+        "created_at": details.get("created_at_input") or project.created_at.isoformat(),
+        "enterprise": details.get("enterprise", ""),
+        "technical_terms": details.get("technical_terms", ""),
+    }
+
+
+@app.get("/api/project-management/projects")
+def list_project_management_projects(db: Session = Depends(get_db)) -> list[dict]:
+    projects = db.query(models.Project).filter(models.Project.deleted_at.is_(None)).order_by(models.Project.id.desc()).all()
+    return [_project_management_row(project) for project in projects]
+
+
+@app.post("/api/project-management/projects")
+def create_project_management_project(payload: ProjectManagementCreate, db: Session = Depends(get_db)) -> dict:
+    project = models.Project(
+        code=f"PRJ-MGMT-{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}-{uuid4().hex[:6]}",
+        name=payload.project_name,
+        owner_user_id=2,
+        status="ACTIVE",
+        description=_project_description(payload.project_manager, payload.enterprise, payload.technical_terms, payload.created_at),
+    )
+    db.add(project)
+    db.commit()
+    db.refresh(project)
+    return _project_management_row(project)
+
+
+@app.put("/api/project-management/projects/{project_id}")
+def update_project_management_project(project_id: int, payload: ProjectManagementCreate, db: Session = Depends(get_db)) -> dict:
+    project = db.get(models.Project, project_id)
+    if project is None or project.deleted_at is not None:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "项目不存在"})
+    project.name = payload.project_name
+    project.description = _project_description(payload.project_manager, payload.enterprise, payload.technical_terms, payload.created_at)
+    db.commit()
+    db.refresh(project)
+    return _project_management_row(project)
+
+
+@app.post("/api/project-management/projects/batch")
+def create_project_management_projects_batch(payload: ProjectManagementBatchCreate, db: Session = Depends(get_db)) -> dict:
+    if not payload.items:
+        raise HTTPException(status_code=400, detail={"code": "PARAM_INVALID", "message": "批量项目不能为空"})
+    projects = []
+    for item in payload.items:
+        project = models.Project(
+            code=f"PRJ-MGMT-{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}-{uuid4().hex[:6]}",
+            name=item.project_name,
+            owner_user_id=2,
+            status="ACTIVE",
+            description=_project_description(item.project_manager, item.enterprise, item.technical_terms, item.created_at),
+        )
+        db.add(project)
+        projects.append(project)
+    db.commit()
+    for project in projects:
+        db.refresh(project)
+    return {"count": len(projects), "items": [_project_management_row(project) for project in projects]}
 
 
 @app.post("/api/projects/{project_id}/items")
@@ -117,8 +214,37 @@ def create_item(project_id: int, payload: ProjectItemCreate, db: Session = Depen
 
 @app.get("/api/projects/{project_id}/items")
 def list_items(project_id: int, db: Session = Depends(get_db)) -> list[dict]:
-    items = db.query(models.ProjectItem).filter_by(project_id=project_id).all()
+    items = db.query(models.ProjectItem).filter_by(project_id=project_id).filter(models.ProjectItem.deleted_at.is_(None)).all()
     return [{"id": i.id, "code": i.code, "name": i.name, "furnace_type": i.furnace_type} for i in items]
+
+
+@app.get("/api/calc-items")
+def list_calc_items(db: Session = Depends(get_db)) -> list[dict]:
+    items = db.query(models.ProjectItem).filter(models.ProjectItem.deleted_at.is_(None)).order_by(models.ProjectItem.id.desc()).all()
+    return [
+        {
+            "id": item.id,
+            "project_id": item.project_id,
+            "code": item.code,
+            "name": item.name,
+            "furnace_type": item.furnace_type,
+            "business_scope": item.business_scope,
+            "design_stage": item.design_stage,
+            "status": item.status,
+        }
+        for item in items
+    ]
+
+
+@app.delete("/api/calc-items/{item_id}")
+def delete_calc_item(item_id: int, db: Session = Depends(get_db)) -> dict:
+    item = db.get(models.ProjectItem, item_id)
+    if item is None or item.deleted_at is not None:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "计算名目不存在"})
+    item.deleted_at = datetime.utcnow()
+    item.status = "DELETED"
+    db.commit()
+    return {"id": item.id, "status": item.status}
 
 
 @app.get("/api/artifact-types")

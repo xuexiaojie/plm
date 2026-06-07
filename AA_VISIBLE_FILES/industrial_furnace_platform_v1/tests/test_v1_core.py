@@ -31,7 +31,99 @@ def test_seed_creates_demo_project_and_templates():
 def test_index_page_loads_console():
     response = client.get("/")
     assert response.status_code == 200
-    assert "工业炉计算平台 V1.0 操作台" in response.text
+    assert "工业炉计算平台 V1.0" in response.text
+    assert "项目管理" in response.text
+    assert "计算名目管理" in response.text
+    assert "计算执行" in response.text
+    assert "横向对比" in response.text
+    assert "审批报告" in response.text
+    assert "数字孪生" in response.text
+    assert "项目资料" in response.text
+    assert "AI 联合分析" in response.text
+    assert "项目录入 - 单点录入" in response.text
+    assert "项目录入 - 批量录入" in response.text
+    assert "项目查询" in response.text
+    assert "智能查询" in response.text
+    assert "项目台账" in response.text
+    assert "保存编辑" in response.text
+    assert "名目创建（分类）" in response.text
+    assert "计算名目台账" in response.text
+    assert "二维设计开发" in response.text
+    assert "CFD优化" in response.text
+
+
+def test_project_management_single_and_batch_create_projects():
+    init_db()
+    options = client.get("/api/project-management/options")
+    assert options.status_code == 200
+    assert "张工" in options.json()["project_managers"]
+    assert "宝山钢铁股份有限公司" in options.json()["enterprises"]
+
+    single = client.post(
+        "/api/project-management/projects",
+        json={
+            "project_name": "项目管理单点录入项目",
+            "project_manager": "张三",
+            "created_at": "2026-06-04 09:00",
+            "enterprise": "企业A",
+            "technical_terms": "技术条款A",
+        },
+    )
+    assert single.status_code == 200
+    assert single.json()["project_manager"] == "张三"
+    assert single.json()["created_at"] == "2026-06-04 09:00"
+
+    updated = client.put(
+        f"/api/project-management/projects/{single.json()['id']}",
+        json={
+            "project_name": "项目管理已编辑项目",
+            "project_manager": "李工",
+            "created_at": "2026-06-05 09:30",
+            "enterprise": "宝山钢铁股份有限公司",
+            "technical_terms": "已编辑技术条款",
+        },
+    )
+    assert updated.status_code == 200
+    assert updated.json()["project_name"] == "项目管理已编辑项目"
+    assert updated.json()["project_manager"] == "李工"
+    assert updated.json()["enterprise"] == "宝山钢铁股份有限公司"
+    assert updated.json()["technical_terms"] == "已编辑技术条款"
+
+    batch = client.post(
+        "/api/project-management/projects/batch",
+        json={
+            "items": [
+                {"project_name": "批量项目A", "project_manager": "经理A", "created_at": "2026-06-04 10:00", "enterprise": "企业A", "technical_terms": "条款A"},
+                {"project_name": "批量项目B", "project_manager": "经理B", "created_at": "2026-06-04 11:00", "enterprise": "企业B", "technical_terms": "条款B"},
+            ]
+        },
+    )
+    assert batch.status_code == 200
+    assert batch.json()["count"] == 2
+
+    ledger = client.get("/api/project-management/projects").json()
+    assert {row["project_name"] for row in ledger} >= {"项目管理已编辑项目", "批量项目A", "批量项目B"}
+
+
+def test_calc_item_management_creates_and_deletes_calc_item():
+    init_db()
+    client.post("/api/seed")
+    project_id = client.get("/api/projects").json()[0]["id"]
+    created = client.post(
+        f"/api/projects/{project_id}/items",
+        json={"code": "CALC-HEAT-001", "name": "热平衡", "furnace_type": "walking_beam_furnace", "business_scope": "计算名目管理", "design_stage": "V1", "status": "ACTIVE"},
+    )
+    assert created.status_code == 200
+
+    ledger = client.get("/api/calc-items").json()
+    created_item = next(row for row in ledger if row["code"] == "CALC-HEAT-001")
+    assert created_item["name"] == "热平衡"
+
+    deleted = client.delete(f"/api/calc-items/{created_item['id']}")
+    assert deleted.status_code == 200
+    assert deleted.json()["status"] == "DELETED"
+    ledger_after_delete = client.get("/api/calc-items").json()
+    assert all(row["id"] != created_item["id"] for row in ledger_after_delete)
 
 
 def test_execute_normal_case_returns_feasible_result():
