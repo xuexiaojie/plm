@@ -32,24 +32,109 @@ def test_index_page_loads_console():
     response = client.get("/")
     assert response.status_code == 200
     assert "工业炉计算平台 V1.0" in response.text
+    assert "登录进入主界面" in response.text
+    assert "请先登录，再进入主界面" in response.text
     assert "项目管理" in response.text
-    assert "计算名目管理" in response.text
-    assert "计算执行" in response.text
+    assert "计算管理" in response.text
+    assert "工程项目" in response.text
+    assert "请先选择工程项目" in response.text
+    assert "点击具体计算模块前，必须先选择工程项目" in response.text
+    assert "计算执行" not in response.text
     assert "横向对比" in response.text
     assert "审批报告" in response.text
     assert "数字孪生" in response.text
     assert "项目资料" in response.text
     assert "AI 联合分析" in response.text
+    assert "权限分配" in response.text
     assert "项目录入 - 单点录入" in response.text
     assert "项目录入 - 批量录入" in response.text
     assert "项目查询" in response.text
-    assert "智能查询" in response.text
     assert "项目台账" in response.text
     assert "保存编辑" in response.text
-    assert "名目创建（分类）" in response.text
-    assert "计算名目台账" in response.text
+    assert "步进炉" in response.text
+    assert "辊底炉" in response.text
+    assert "环形炉" in response.text
+    assert "步进炉二级离线模型" in response.text
+    assert "renderWalkingOfflineModel" in response.text
+    assert "runWalkingOfflineModel" in response.text
+    assert "closeCalcModal" in response.text
+    assert "drawOfflineCurve" in response.text
+    assert "drawOfflineHeatmap" in response.text
+    assert "离线二级模型采用分炉段炉温设定" in response.text
+    assert "弹出式计算界面" in response.text
+    assert "计算曲线" in response.text
+    assert "温度云图" in response.text
+    assert "开始计算" in response.text
+    assert "平均出炉温度" in response.text
+    assert "加热曲线" in response.text
+    assert "renderHeatingCurveModel" in response.text
+    assert "runHeatingCurveModel" in response.text
+    assert "计算加热曲线" in response.text
+    assert "炉子产量 t/h" in response.text
+    assert "料坯及空煤气" in response.text
+    assert "散热损失" in response.text
+    assert "钢坯入炉表面温度" in response.text
+    assert "炉膛内宽" in response.text
+    assert "等效导热系数" in response.text
+    assert "煤气热值 kJ/Nm3" in response.text
+    assert "纵梁/立柱绝热完好率" in response.text
+    assert "加热曲线满足目标" in response.text
+    assert "出钢表面温度" in response.text
+    assert "出钢平均温度" in response.text
+    assert "最大温度应力" in response.text
+    assert "排烟温度" in response.text
+    assert "buildHeatBalanceAnalysis" in response.text
+    assert "热平衡图" in response.text
+    assert "heat-balance" in response.text
+    assert "heat-center" in response.text
+    assert "总热量" in response.text
+    assert "热收入" in response.text
+    assert "热支出" in response.text
+    assert "燃料物理热" in response.text
+    assert "空气物理热" in response.text
+    assert "钢坯氧化放热" in response.text
+    assert "燃料化学热" in response.text
+    assert "钢坯吸热" in response.text
+    assert "炉气带走热量" in response.text
+    assert "加热炉热效率" in response.text
+    assert "计算单位热耗" in response.text
+    assert "水梁计算" in response.text
+    assert "排烟计算" in response.text
+    assert "传热计算" in response.text
+    assert "蓄热计算" in response.text
+    assert "空气管道" in response.text
+    assert "换热器" in response.text
+    assert "煤气管道" in response.text
+    assert "多工况頭" in response.text
+    assert "辊底炉二级离线模型" in response.text
+    assert "环形炉二级离线模型" in response.text
+    assert "点击固定计算按钮，直接进入对应程序界面" not in response.text
+    assert "请选择计算功能" not in response.text
+    assert "程序界面将在这里展示" not in response.text
     assert "二维设计开发" in response.text
     assert "CFD优化" in response.text
+
+
+def test_permission_assignment_updates_role_permissions():
+    response = client.get("/api/permissions", headers={"X-Role": "admin"})
+    assert response.status_code == 200
+    assert "execution:run" in {item["code"] for item in response.json()["permissions"]}
+
+    updated = client.put(
+        "/api/permissions/roles/readonly",
+        headers={"X-Role": "admin"},
+        json={"permissions": ["read", "report:download", "ai:analyze"]},
+    )
+    assert updated.status_code == 200
+    readonly = next(role for role in updated.json()["roles"] if role["code"] == "readonly")
+    assert readonly["permissions"] == ["ai:analyze", "read", "report:download"]
+
+    forbidden = client.put(
+        "/api/permissions/roles/readonly",
+        headers={"X-Role": "engineer"},
+        json={"permissions": ["read"]},
+    )
+    assert forbidden.status_code == 403
 
 
 def test_project_management_single_and_batch_create_projects():

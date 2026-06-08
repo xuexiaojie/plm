@@ -30,6 +30,10 @@ class ProjectManagementBatchCreate(BaseModel):
     items: list[ProjectManagementCreate]
 
 
+class PermissionAssignment(BaseModel):
+    permissions: list[str]
+
+
 class ProjectRead(ProjectCreate):
     id: int
 

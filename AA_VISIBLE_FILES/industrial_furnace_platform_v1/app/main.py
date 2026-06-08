@@ -20,6 +20,7 @@ from app.schemas import (
     ArtifactCreate,
     ExecutionRequest,
     ExecutorResponse,
+    PermissionAssignment,
     ProjectCreate,
     ProjectItemCreate,
     ProjectManagementBatchCreate,
@@ -49,6 +50,28 @@ ROLE_PERMISSIONS = {
     "algorithm_admin": {"execution:run", "template:manage", "report:download", "read"},
     "admin": {"*"},
     "readonly": {"read", "report:download"},
+}
+
+PERMISSION_CATALOG = [
+    {"code": "read", "name": "查看数据", "description": "查看项目、计算、报告和资料数据"},
+    {"code": "execution:run", "name": "执行计算", "description": "发起计算执行并生成结果快照"},
+    {"code": "approval:submit", "name": "提交审批", "description": "把计算结果提交给审核人"},
+    {"code": "approval:review", "name": "审批处理", "description": "执行审批通过或退回"},
+    {"code": "report:create", "name": "生成报告", "description": "生成草稿报告或正式报告"},
+    {"code": "report:download", "name": "下载报告", "description": "下载已生成报告文本"},
+    {"code": "comparison:create", "name": "横向对比", "description": "创建和查看横向对比组"},
+    {"code": "artifact:manage", "name": "资料管理", "description": "新增和批量录入项目资料"},
+    {"code": "ai:analyze", "name": "AI 分析", "description": "启动 AI 联合分析"},
+    {"code": "template:manage", "name": "模板管理", "description": "维护计算模板和算法入口"},
+]
+
+ROLE_NAMES = {
+    "engineer": "普通计算人员",
+    "reviewer": "审核人",
+    "template_admin": "模板管理员",
+    "algorithm_admin": "算法维护人员",
+    "admin": "系统管理员",
+    "readonly": "只读用户",
 }
 
 
@@ -83,6 +106,21 @@ def permission_dependency(permission: str):
     return dependency
 
 
+def _permission_snapshot() -> dict:
+    return {
+        "permissions": PERMISSION_CATALOG,
+        "roles": [
+            {
+                "code": role,
+                "name": ROLE_NAMES.get(role, role),
+                "permissions": sorted(permissions),
+                "is_super_admin": "*" in permissions,
+            }
+            for role, permissions in ROLE_PERMISSIONS.items()
+        ],
+    }
+
+
 def validate_project_item(db: Session, project_id: int, project_item_id: int | None) -> None:
     if project_item_id is None:
         return
@@ -108,6 +146,25 @@ def list_projects(db: Session = Depends(get_db)) -> list[dict]:
 @app.get("/api/project-management/options")
 def get_project_management_options() -> dict[str, list[str]]:
     return {"project_managers": PROJECT_MANAGER_CANDIDATES, "enterprises": ENTERPRISE_CANDIDATES}
+
+
+@app.get("/api/permissions")
+def list_permissions(role: str = Depends(permission_dependency("read"))) -> dict:
+    return _permission_snapshot()
+
+
+@app.put("/api/permissions/roles/{role_code}")
+def update_role_permissions(role_code: str, payload: PermissionAssignment, role: str = Depends(permission_dependency("permission:assign"))) -> dict:
+    if role_code not in ROLE_PERMISSIONS:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "角色不存在"})
+    if role_code == "admin":
+        raise HTTPException(status_code=400, detail={"code": "STATE_INVALID", "message": "系统管理员权限固定为全部权限"})
+    allowed_permissions = {item["code"] for item in PERMISSION_CATALOG}
+    invalid_permissions = sorted(set(payload.permissions) - allowed_permissions)
+    if invalid_permissions:
+        raise HTTPException(status_code=400, detail={"code": "PARAM_INVALID", "message": "存在不支持的权限", "details": {"permissions": invalid_permissions}})
+    ROLE_PERMISSIONS[role_code] = set(payload.permissions)
+    return _permission_snapshot()
 
 
 @app.post("/api/projects")
