@@ -39,8 +39,13 @@ def test_index_page_loads_console():
     assert "工程项目" in response.text
     assert "请先选择工程项目" in response.text
     assert "点击具体计算模块前，必须先选择工程项目" in response.text
+    assert "calcProjectInfo" in response.text
+    assert "选择后将显示项目经理和项目介绍，并启用炉型与计算条目" in response.text
+    assert "项目经理:" in response.text
+    assert "项目介绍:" in response.text
+    assert "disabled ? \"disabled\"" in response.text
     assert "计算执行" not in response.text
-    assert "横向对比" in response.text
+    assert '<button data-view="comparison-view"' not in response.text
     assert "审批报告" in response.text
     assert "数字孪生" in response.text
     assert "项目资料" in response.text
@@ -145,6 +150,9 @@ def test_index_page_loads_console():
     assert "炉底转速" in response.text
     assert "offlineRunsKey" in response.text
     assert "最近 5 次计算比较" in response.text
+    assert "查看计算对比" in response.text
+    assert "showOfflineComparison" in response.text
+    assert "addOfflineCompareButton" in response.text
     assert "selectOfflineFinal" in response.text
     assert "设为最终" in response.text
     assert "最终计算" in response.text
