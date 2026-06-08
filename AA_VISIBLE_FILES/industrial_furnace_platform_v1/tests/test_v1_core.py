@@ -101,6 +101,7 @@ def test_index_page_loads_console():
     assert "水梁计算" in response.text
     assert "水冷梁水冷计算" in response.text
     assert "气化冷却计算" in response.text
+    assert "水梁垫块黑印计算" in response.text
     assert "排烟计算" in response.text
     assert "传热计算" in response.text
     assert "蓄热计算" in response.text
@@ -112,7 +113,13 @@ def test_index_page_loads_console():
     assert "蓄热烧嘴计算" in response.text
     assert "步进框架计算" in response.text
     assert "步进液压系统计算" in response.text
+    assert "装出钢机计算" in response.text
+    assert "装出料辊道计算" in response.text
     assert "多工况计算" in response.text
+    assert "总体热工" in response.text
+    assert "热工单体" in response.text
+    assert "烧嘴计算" in response.text
+    assert "炉底机械" in response.text
     assert "renderWalkingSpecialCalc" in response.text
     assert "runWalkingSpecialCalc" in response.text
     assert "runWaterCoolingBeam" in response.text
@@ -122,6 +129,9 @@ def test_index_page_loads_console():
     assert "runRegenerativeBurner" in response.text
     assert "runWalkingFrame" in response.text
     assert "runHydraulicSystem" in response.text
+    assert "runSkidMark" in response.text
+    assert "runChargingMachine" in response.text
+    assert "runChargingRollerTable" in response.text
     assert "renderMultiScenarioModel" in response.text
     assert "runMultiScenarioModel" in response.text
     assert "工况风险矩阵" in response.text
