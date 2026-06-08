@@ -143,6 +143,18 @@ def test_index_page_loads_console():
     assert "runIndustrialOfflineModel" in response.text
     assert "辊面接触修正" in response.text
     assert "炉底转速" in response.text
+    assert "offlineRunsKey" in response.text
+    assert "最近 5 次计算比较" in response.text
+    assert "selectOfflineFinal" in response.text
+    assert "设为最终" in response.text
+    assert "最终计算" in response.text
+    assert "最近仅保留 5 次计算记录" in response.text
+    assert "addOfflineComparisonRun(\"步进炉二级离线模型\"" in response.text
+    assert "renderOfflineComparison(config.modelName)" in response.text
+    assert "drawOfflineCurve(history, target)" in response.text
+    assert "drawOfflineHeatmap(snapshots)" in response.text
+    assert 'offlineFurnaceConfigs["辊底炉"].defaults = [180, 1250, 6200, 60, 930, 55, 75, 0.95, 7.2, 9.5, 8.4' in response.text
+    assert 'offlineFurnaceConfigs["环形炉"].defaults = [260, 980, 4200, 80, 1220, 150, 210, 1.8, 18, 22, 16' in response.text
     assert "先选择工程项目，再进入" not in response.text
     assert "项计算" not in response.text
     assert "点击固定计算按钮，直接进入对应程序界面" not in response.text
