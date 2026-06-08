@@ -105,7 +105,10 @@ def test_index_page_loads_console():
     assert "空气管道" in response.text
     assert "换热器" in response.text
     assert "煤气管道" in response.text
-    assert "多工况頭" in response.text
+    assert "多工况计算" in response.text
+    assert "renderMultiScenarioModel" in response.text
+    assert "runMultiScenarioModel" in response.text
+    assert "工况风险矩阵" in response.text
     assert "辊底炉二级离线模型" in response.text
     assert "环形炉二级离线模型" in response.text
     assert "点击固定计算按钮，直接进入对应程序界面" not in response.text
