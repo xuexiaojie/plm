@@ -99,13 +99,29 @@ def test_index_page_loads_console():
     assert "加热炉热效率" in response.text
     assert "计算单位热耗" in response.text
     assert "水梁计算" in response.text
+    assert "水冷梁水冷计算" in response.text
+    assert "气化冷却计算" in response.text
     assert "排烟计算" in response.text
     assert "传热计算" in response.text
     assert "蓄热计算" in response.text
     assert "空气管道" in response.text
     assert "换热器" in response.text
     assert "煤气管道" in response.text
+    assert "平焰烧嘴计算" in response.text
+    assert "高速烧嘴计算" in response.text
+    assert "蓄热烧嘴计算" in response.text
+    assert "步进框架计算" in response.text
+    assert "步进液压系统计算" in response.text
     assert "多工况计算" in response.text
+    assert "renderWalkingSpecialCalc" in response.text
+    assert "runWalkingSpecialCalc" in response.text
+    assert "runWaterCoolingBeam" in response.text
+    assert "runEvaporativeCooling" in response.text
+    assert "runFlatFlameBurner" in response.text
+    assert "runHighVelocityBurner" in response.text
+    assert "runRegenerativeBurner" in response.text
+    assert "runWalkingFrame" in response.text
+    assert "runHydraulicSystem" in response.text
     assert "renderMultiScenarioModel" in response.text
     assert "runMultiScenarioModel" in response.text
     assert "工况风险矩阵" in response.text
