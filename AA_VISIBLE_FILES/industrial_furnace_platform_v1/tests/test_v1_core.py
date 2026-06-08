@@ -60,8 +60,9 @@ def test_index_page_loads_console():
     assert "closeCalcModal" in response.text
     assert "drawOfflineCurve" in response.text
     assert "drawOfflineHeatmap" in response.text
-    assert "离线二级模型采用分炉段炉温设定" in response.text
-    assert "弹出式计算界面" in response.text
+    assert "分炉段炉温、步进节拍、水梁黑印" in response.text
+    assert "步进周期" in response.text
+    assert "黑印温降估算" in response.text
     assert "计算曲线" in response.text
     assert "温度云图" in response.text
     assert "开始计算" in response.text
@@ -137,6 +138,13 @@ def test_index_page_loads_console():
     assert "工况风险矩阵" in response.text
     assert "辊底炉二级离线模型" in response.text
     assert "环形炉二级离线模型" in response.text
+    assert "offlineFurnaceConfigs" in response.text
+    assert "renderIndustrialOfflineModel" in response.text
+    assert "runIndustrialOfflineModel" in response.text
+    assert "辊面接触修正" in response.text
+    assert "炉底转速" in response.text
+    assert "先选择工程项目，再进入" not in response.text
+    assert "项计算" not in response.text
     assert "点击固定计算按钮，直接进入对应程序界面" not in response.text
     assert "请选择计算功能" not in response.text
     assert "程序界面将在这里展示" not in response.text
