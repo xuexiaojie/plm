@@ -1,18 +1,24 @@
 import json
+import hashlib
+import math
+import re
+import zipfile
 from contextlib import asynccontextmanager
 from datetime import datetime
+from io import BytesIO
 from pathlib import Path
 from time import perf_counter
 from uuid import uuid4
+from xml.etree import ElementTree
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
 from app import models
 from app.ai_client import run_joint_analysis
-from app.db import get_db, init_db
+from app.db import SessionLocal, get_db, init_db
 from app.executors import run_template
 from app.schemas import (
     AiAnalysisRequest,
@@ -36,6 +42,11 @@ BASE_DIR = Path(__file__).resolve().parent
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    db = SessionLocal()
+    try:
+        _ensure_artifact_chunks(db)
+    finally:
+        db.close()
     yield
 
 
@@ -61,7 +72,7 @@ PERMISSION_CATALOG = [
     {"code": "report:download", "name": "下载报告", "description": "下载已生成报告文本"},
     {"code": "comparison:create", "name": "横向对比", "description": "创建和查看横向对比组"},
     {"code": "artifact:manage", "name": "资料管理", "description": "新增和批量录入项目资料"},
-    {"code": "ai:analyze", "name": "AI 分析", "description": "启动 AI 联合分析"},
+    {"code": "ai:analyze", "name": "AI 问答", "description": "根据项目资料回答问题"},
     {"code": "template:manage", "name": "模板管理", "description": "维护计算模板和算法入口"},
 ]
 
@@ -86,12 +97,19 @@ ARTIFACT_TYPES = {
 
 PROJECT_MANAGER_CANDIDATES = ["张工", "李工", "王工", "赵工"]
 ENTERPRISE_CANDIDATES = ["宝山钢铁股份有限公司", "鞍钢集团工程技术有限公司", "首钢集团有限公司", "河钢集团有限公司"]
+TEXT_FILE_SUFFIXES = {".txt", ".md", ".csv", ".json", ".html", ".xml", ".yaml", ".yml", ".log"}
+EMBEDDING_DIMENSIONS = 96
+CHUNK_SIZE = 900
+CHUNK_OVERLAP = 120
 
 
 @app.get("/", response_class=HTMLResponse)
 def index() -> str:
     with open(BASE_DIR / "static" / "index.html", encoding="utf-8") as page:
-        return page.read()
+        html = page.read().replace("AI 联合分析", "AI 问答")
+        html = html.replace('id="artifactFileSummary" class="meta">可一次选择多个文档、图片或视频。', 'id="artifactFileSummary" class="meta">可一次选择多个文档、图片或视频。.docx 和文本类附件会自动读取正文。')
+        html = html.replace('id="artifactBatchDocSummary" class="meta">只支持文档文件，每个文档将生成一个资料条目。', 'id="artifactBatchDocSummary" class="meta">只支持文档文件，每个文档将生成一个资料条目。.docx 和文本类附件会自动读取正文。')
+        return html
 
 
 def require_permission(permission: str, role: str | None = Header(default="admin", alias="X-Role")) -> str:
@@ -131,6 +149,125 @@ def validate_project_item(db: Session, project_id: int, project_item_id: int | N
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "名目不存在"})
     if item.project_id != project_id:
         raise HTTPException(status_code=400, detail={"code": "PARAM_INVALID", "message": "名目不属于当前项目"})
+
+
+def _extract_docx_text(content: bytes) -> str:
+    try:
+        with zipfile.ZipFile(BytesIO(content)) as archive:
+            document = archive.read("word/document.xml")
+    except (KeyError, zipfile.BadZipFile) as error:
+        raise HTTPException(status_code=400, detail={"code": "PARAM_INVALID", "message": "Word 文档解析失败，请确认文件为 .docx 格式"}) from error
+    root = ElementTree.fromstring(document)
+    paragraphs = []
+    for paragraph in root.iter("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}p"):
+        text = "".join(node.text or "" for node in paragraph.iter("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t"))
+        if text.strip():
+            paragraphs.append(text.strip())
+    return "\n".join(paragraphs)
+
+
+def _decode_uploaded_text(filename: str, content_type: str | None, content: bytes) -> tuple[str, str]:
+    suffix = Path(filename).suffix.lower()
+    if suffix == ".docx":
+        return "已解析 Word 正文", _extract_docx_text(content)
+    if (content_type or "").startswith("text/") or suffix in TEXT_FILE_SUFFIXES:
+        for encoding in ("utf-8", "gb18030"):
+            try:
+                return "已读取文本正文", content.decode(encoding)
+            except UnicodeDecodeError:
+                continue
+        return "文本附件解码失败", ""
+    return "当前版本仅支持自动解析 .docx 和文本类附件正文", ""
+
+
+def _artifact_response(artifact: models.ProjectArtifact) -> dict:
+    return {"id": artifact.id, "artifact_type": artifact.artifact_type, "type_name": ARTIFACT_TYPES[artifact.artifact_type], "title": artifact.title}
+
+
+def _chunk_text(text: str, size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> list[str]:
+    compact = re.sub(r"\n{3,}", "\n\n", text.strip())
+    if not compact:
+        return []
+    chunks = []
+    start = 0
+    while start < len(compact):
+        end = min(len(compact), start + size)
+        chunks.append(compact[start:end])
+        if end == len(compact):
+            break
+        start = max(end - overlap, start + 1)
+    return chunks
+
+
+def _tokenize_for_embedding(text: str) -> list[str]:
+    words = re.findall(r"[A-Za-z0-9_]+|[\u4e00-\u9fff]", text.lower())
+    return [word for word in words if word.strip()]
+
+
+def _embed_text(text: str) -> list[float]:
+    vector = [0.0] * EMBEDDING_DIMENSIONS
+    for token in _tokenize_for_embedding(text):
+        index = int(hashlib.sha256(token.encode("utf-8")).hexdigest(), 16) % EMBEDDING_DIMENSIONS
+        vector[index] += 1.0
+    norm = math.sqrt(sum(value * value for value in vector)) or 1.0
+    return [round(value / norm, 6) for value in vector]
+
+
+def _cosine_similarity(left: list[float], right: list[float]) -> float:
+    return sum(left_value * right_value for left_value, right_value in zip(left, right))
+
+
+def _rebuild_artifact_chunks(db: Session, artifact: models.ProjectArtifact) -> None:
+    db.query(models.ProjectArtifactChunk).filter_by(artifact_id=artifact.id).delete()
+    for index, chunk in enumerate(_chunk_text(artifact.content)):
+        db.add(
+            models.ProjectArtifactChunk(
+                project_id=artifact.project_id,
+                artifact_id=artifact.id,
+                chunk_index=index,
+                content=chunk,
+                embedding_json=json.dumps(_embed_text(chunk)),
+            )
+        )
+
+
+def _search_artifact_chunks(db: Session, project_id: int, question: str, artifact_ids: list[int], limit: int = 8) -> list[dict]:
+    query = db.query(models.ProjectArtifactChunk).filter_by(project_id=project_id)
+    if artifact_ids:
+        query = query.filter(models.ProjectArtifactChunk.artifact_id.in_(artifact_ids))
+    question_embedding = _embed_text(question)
+    scored = []
+    for chunk in query.all():
+        score = _cosine_similarity(question_embedding, json.loads(chunk.embedding_json))
+        if score > 0 or not question.strip():
+            artifact = db.get(models.ProjectArtifact, chunk.artifact_id)
+            scored.append((score, chunk, artifact))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return [
+        {
+            "artifact_id": chunk.artifact_id,
+            "chunk_id": chunk.id,
+            "chunk_index": chunk.chunk_index,
+            "score": round(score, 4),
+            "type": artifact.artifact_type if artifact else "project_artifact",
+            "type_name": ARTIFACT_TYPES.get(artifact.artifact_type, artifact.artifact_type) if artifact else "项目资料",
+            "title": artifact.title if artifact else "未知资料",
+            "content": chunk.content,
+        }
+        for score, chunk, artifact in scored[:limit]
+    ]
+
+
+def _ensure_artifact_chunks(db: Session) -> None:
+    artifacts = db.query(models.ProjectArtifact).filter_by(status="ACTIVE").all()
+    changed = False
+    for artifact in artifacts:
+        exists = db.query(models.ProjectArtifactChunk).filter_by(artifact_id=artifact.id).first()
+        if exists is None:
+            _rebuild_artifact_chunks(db, artifact)
+            changed = True
+    if changed:
+        db.commit()
 
 
 @app.post("/api/seed")
@@ -325,9 +462,54 @@ def create_artifact(
     validate_project_item(db, project_id, payload.project_item_id)
     artifact = models.ProjectArtifact(project_id=project_id, **payload.model_dump())
     db.add(artifact)
+    db.flush()
+    _rebuild_artifact_chunks(db, artifact)
     db.commit()
     db.refresh(artifact)
-    return {"id": artifact.id, "artifact_type": artifact.artifact_type, "type_name": ARTIFACT_TYPES[artifact.artifact_type], "title": artifact.title}
+    return _artifact_response(artifact)
+
+
+@app.post("/api/projects/{project_id}/artifacts/upload")
+async def upload_artifact(
+    project_id: int,
+    artifact_type: str = Form(...),
+    title: str = Form(...),
+    content: str = Form(""),
+    source_code: str | None = Form(None),
+    project_item_id: int | None = Form(None),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    role: str = Depends(permission_dependency("artifact:manage")),
+) -> dict:
+    if artifact_type not in ARTIFACT_TYPES:
+        raise HTTPException(status_code=400, detail={"code": "PARAM_INVALID", "message": "资料类型不支持"})
+    if db.get(models.Project, project_id) is None:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "项目不存在"})
+    validate_project_item(db, project_id, project_item_id)
+    raw = await file.read()
+    status, text = _decode_uploaded_text(file.filename or title, file.content_type, raw)
+    file_summary = [
+        "附件清单与正文:",
+        f"- {file.filename or '未命名文件'} | {file.content_type or '未知类型'} | {len(raw) / 1024 / 1024:.2f} MB",
+        f"  说明: {status}",
+    ]
+    if text.strip():
+        file_summary.extend(["  正文:", text[:50000]])
+    artifact = models.ProjectArtifact(
+        project_id=project_id,
+        project_item_id=project_item_id,
+        artifact_type=artifact_type,
+        title=title,
+        source_code=source_code,
+        content="\n".join([content or "", "", *file_summary]).strip(),
+        status="ACTIVE",
+    )
+    db.add(artifact)
+    db.flush()
+    _rebuild_artifact_chunks(db, artifact)
+    db.commit()
+    db.refresh(artifact)
+    return {**_artifact_response(artifact), "parse_status": status}
 
 
 @app.post("/api/projects/{project_id}/artifacts/batch")
@@ -348,6 +530,8 @@ def create_artifacts_batch(
         validate_project_item(db, project_id, item.project_item_id)
         artifact = models.ProjectArtifact(project_id=project_id, **item.model_dump())
         db.add(artifact)
+        db.flush()
+        _rebuild_artifact_chunks(db, artifact)
         artifacts.append(artifact)
     db.commit()
     for artifact in artifacts:
@@ -355,7 +539,7 @@ def create_artifacts_batch(
     return {
         "count": len(artifacts),
         "items": [
-            {"id": artifact.id, "artifact_type": artifact.artifact_type, "type_name": ARTIFACT_TYPES[artifact.artifact_type], "title": artifact.title}
+            _artifact_response(artifact)
             for artifact in artifacts
         ],
     }
@@ -741,14 +925,16 @@ def create_ai_analysis(
                 "content": artifact.content,
             }
         )
+    retrieved_chunks = _search_artifact_chunks(db, project_id, payload.question, payload.artifact_ids)
     request_data = {
         "equipment_name": payload.equipment_name,
         "analysis_type": payload.analysis_type,
         "question": payload.question,
         "executions": executions,
+        "retrieved_chunks": retrieved_chunks,
         "artifacts": artifacts,
     }
-    prompt = "请基于以下 JSON 进行工业炉设备联合分析，重点比较计算结果、现场反馈、审图单、技术说明、图纸目录、材料表、专利等技术文档之间的一致性，并按物质流、能量流、信息流三个维度输出结论。\n" + json.dumps(request_data, ensure_ascii=False, indent=2)
+    prompt = json.dumps(request_data, ensure_ascii=False, indent=2)
     ai_result = run_joint_analysis(prompt)
     analysis = models.AiAnalysis(
         project_id=project_id,

@@ -4,3 +4,4 @@ pydantic
 uvicorn
 pytest
 httpx
+python-multipart

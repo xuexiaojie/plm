@@ -56,6 +56,17 @@ class ProjectArtifact(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(32), default="ACTIVE", nullable=False)
 
 
+class ProjectArtifactChunk(Base, TimestampMixin):
+    __tablename__ = "project_artifact_chunks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), nullable=False, index=True)
+    artifact_id: Mapped[int] = mapped_column(ForeignKey("project_artifacts.id"), nullable=False, index=True)
+    chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    embedding_json: Mapped[str] = mapped_column(Text, nullable=False)
+
+
 class AiAnalysis(Base, TimestampMixin):
     __tablename__ = "ai_analyses"
 

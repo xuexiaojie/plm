@@ -1,4 +1,7 @@
 import os
+import json
+import zipfile
+from io import BytesIO
 
 os.environ["DATABASE_URL"] = "sqlite:///:memory:"
 
@@ -10,6 +13,15 @@ from app.main import app
 
 
 client = TestClient(app)
+
+
+def build_docx(text: str) -> bytes:
+    buffer = BytesIO()
+    document = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>{text}</w:t></w:r></w:p></w:body></w:document>'''
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("word/document.xml", document)
+    return buffer.getvalue()
 
 
 def test_seed_creates_demo_project_and_templates():
@@ -70,6 +82,17 @@ def test_index_page_loads_console():
     assert "multiple accept" in response.text
     assert "renderArtifactFileSummary" in response.text
     assert "附件清单" in response.text
+    assert "附件清单与正文" in response.text
+    assert "isReadableTextFile" in response.text
+    assert "isDocxFile" in response.text
+    assert "artifactParseHint" in response.text
+    assert "fileContentBlock" in response.text
+    assert "uploadArtifactFile" in response.text
+    assert "FormData" in response.text
+    assert "/artifacts/upload" in response.text
+    assert ".docx 和文本类附件会自动读取正文" in response.text
+    assert "将解析 Word 正文" in response.text
+    assert "仅记录附件信息" in response.text
     assert "确认上传" in response.text
     assert "批量上传文档" in response.text
     assert "artifactBatchDocs" in response.text
@@ -86,7 +109,18 @@ def test_index_page_loads_console():
     assert "artifactProjectLocked" in response.text
     assert "renderArtifactUploadLock" in response.text
     assert "下面的资料上传内容为灰色且不可执行" in response.text
-    assert "AI 联合分析" in response.text
+    assert "AI 问答" in response.text
+    assert "系统只从当前项目资料里的文件和文字内容中查找答案" in response.text
+    assert "例如：东华项目出现过什么问题？" in response.text
+    assert "提问" in response.text
+    assert "回答" in response.text
+    assert "renderAiAnalysisCard" in response.text
+    assert "currentAiProjectId" in response.text
+    assert "aiAnswerText" in response.text
+    assert "正在从项目资料中查找答案" in response.text
+    assert "AI 问答失败" in response.text
+    assert "renderAiError" in response.text
+    assert "execution_ids: []" in response.text
     assert "权限分配" in response.text
     assert "项目录入 - 单点录入" in response.text
     assert "项目录入 - 批量录入" in response.text
@@ -565,13 +599,19 @@ def test_artifacts_and_ai_joint_analysis_use_mock_without_api_config():
             "equipment_name": "装出钢机",
             "execution_ids": [execution.id],
             "artifact_ids": artifact_ids,
-            "question": "请联合分析装出钢机计算、现场反馈、审图单、技术说明、图纸目录、材料表和专利等技术文档，并按物质流、能量流、信息流输出结论。",
+            "question": "装出钢机出现过什么问题？",
         },
     )
     assert analysis.status_code == 200
     assert analysis.json()["provider"] == "mock"
-    assert "risks" in analysis.json()["result"]
-    assert set(analysis.json()["result"]["three_flows"]) == {"material_flow", "energy_flow", "information_flow"}
+    assert "answer" in analysis.json()["result"]
+    assert "装出钢机现场安装空间与计算假设需要联合复核" in analysis.json()["result"]["answer"]
+    db = SessionLocal()
+    saved_analysis = db.query(models.AiAnalysis).order_by(models.AiAnalysis.id.desc()).first()
+    request_json = json.loads(saved_analysis.request_json)
+    db.close()
+    assert request_json["retrieved_chunks"]
+    assert "装出钢机现场安装空间" in request_json["retrieved_chunks"][0]["content"]
 
 
 def test_project_artifacts_batch_create_all_supported_types():
@@ -605,6 +645,36 @@ def test_project_artifacts_batch_create_all_supported_types():
         "material_list",
         "patent_technical_document",
     }
+
+
+def test_upload_docx_artifact_extracts_text_content():
+    init_db()
+    client.post("/api/seed")
+    project_id = client.get("/api/projects").json()[0]["id"]
+    item_id = client.get(f"/api/projects/{project_id}/items").json()[0]["id"]
+
+    response = client.post(
+        f"/api/projects/{project_id}/artifacts/upload",
+        headers={"X-Role": "engineer"},
+        data={
+            "project_item_id": str(item_id),
+            "artifact_type": "site_feedback",
+            "title": "土耳其现场汇报",
+            "source_code": "DOCX-001",
+            "content": "上传日期: 2026-06-09",
+        },
+        files={"file": ("tosyali.docx", build_docx("土耳其项目反馈：炉门密封不严，现场需要复核风机能力。"), "application/vnd.openxmlformats-officedocument.wordprocessingml.document")},
+    )
+    assert response.status_code == 200
+    assert response.json()["parse_status"] == "已解析 Word 正文"
+
+    artifacts = client.get(f"/api/projects/{project_id}/artifacts").json()
+    assert "土耳其项目反馈：炉门密封不严" in artifacts[0]["content"]
+    db = SessionLocal()
+    chunks = db.query(models.ProjectArtifactChunk).filter_by(artifact_id=response.json()["id"]).all()
+    db.close()
+    assert chunks
+    assert "土耳其项目反馈：炉门密封不严" in chunks[0].content
 
 
 def test_artifact_rejects_project_item_from_another_project():

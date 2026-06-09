@@ -154,4 +154,4 @@ class AiAnalysisRequest(BaseModel):
     analysis_type: str = "equipment_joint_analysis"
     execution_ids: list[int] = Field(default_factory=list)
     artifact_ids: list[int] = Field(default_factory=list)
-    question: str = "请联合分析同一设备的计算结果、现场反馈、审图单、技术说明、图纸目录、材料表和专利等技术文档，并按物质流、能量流、信息流三个维度输出风险点、矛盾点和建议。"
+    question: str = "请根据项目资料回答我的问题。"
