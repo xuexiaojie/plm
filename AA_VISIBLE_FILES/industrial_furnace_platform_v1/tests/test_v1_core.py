@@ -54,6 +54,38 @@ def test_index_page_loads_console():
     assert "审批报告" in response.text
     assert "数字孪生" in response.text
     assert "项目资料" in response.text
+    assert "项目资料模糊查询" in response.text
+    assert "artifactProjectSearch" in response.text
+    assert "renderArtifactProjectOptions" in response.text
+    assert "syncArtifactProject" in response.text
+    assert "artifactProjectInfo" in response.text
+    assert "industrial-v1-last-artifact-project" in response.text
+    assert "资料内容" in response.text
+    assert '<option value="site_feedback" selected>现场反馈</option>' in response.text
+    assert '<option value="technical_description">技术说明</option>' in response.text
+    assert '<option value="material_list">材料表</option>' in response.text
+    assert '<option value="patent_technical_document">专利等技术文档</option>' in response.text
+    assert "技术附件" not in response.text
+    assert "上传文档、图片、视频" in response.text
+    assert "multiple accept" in response.text
+    assert "renderArtifactFileSummary" in response.text
+    assert "附件清单" in response.text
+    assert "确认上传" in response.text
+    assert "批量上传文档" in response.text
+    assert "artifactBatchDocs" in response.text
+    assert "artifactBatchButton" in response.text
+    assert "renderArtifactBatchDocSummary" in response.text
+    assert "createArtifactDocumentsBatch" in response.text
+    assert "只支持文档文件，每个文档将生成一个资料条目" in response.text
+    assert "请先选择需要批量上传的文档" in response.text
+    assert "${baseTitle}-${index + 1}" in response.text
+    assert 'accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.md"' in response.text
+    assert "上传日期" in response.text
+    assert "上传人" in response.text
+    assert "条目标题" in response.text
+    assert "artifactProjectLocked" in response.text
+    assert "renderArtifactUploadLock" in response.text
+    assert "下面的资料上传内容为灰色且不可执行" in response.text
     assert "AI 联合分析" in response.text
     assert "权限分配" in response.text
     assert "项目录入 - 单点录入" in response.text
@@ -203,6 +235,10 @@ def test_index_page_loads_console():
     assert "点击固定计算按钮，直接进入对应程序界面" not in response.text
     assert "请选择计算功能" not in response.text
     assert "程序界面将在这里展示" not in response.text
+    assert "新增资料" not in response.text
+    assert "按项目批量录入" not in response.text
+    assert "刷新资料" not in response.text
+    assert "batchArtifacts" not in response.text
     assert "二维设计开发" in response.text
     assert "CFD优化" in response.text
 
@@ -485,10 +521,24 @@ def test_artifacts_and_ai_joint_analysis_use_mock_without_api_config():
     assert execution_response.status_code == 200
 
     artifact_types = client.get("/api/artifact-types").json()
-    assert {row["code"] for row in artifact_types} == {"site_feedback", "drawing_review", "technical_attachment", "drawing_catalog"}
+    assert {row["code"] for row in artifact_types} == {
+        "site_feedback",
+        "drawing_review",
+        "technical_description",
+        "drawing_catalog",
+        "material_list",
+        "patent_technical_document",
+    }
 
     artifact_ids = []
-    for artifact_type in ("site_feedback", "drawing_review", "technical_attachment", "drawing_catalog"):
+    for artifact_type in (
+        "site_feedback",
+        "drawing_review",
+        "technical_description",
+        "drawing_catalog",
+        "material_list",
+        "patent_technical_document",
+    ):
         created = client.post(
             f"/api/projects/{project_id}/artifacts",
             headers={"X-Role": "engineer"},
@@ -515,7 +565,7 @@ def test_artifacts_and_ai_joint_analysis_use_mock_without_api_config():
             "equipment_name": "装出钢机",
             "execution_ids": [execution.id],
             "artifact_ids": artifact_ids,
-            "question": "请联合分析装出钢机计算、现场反馈、审图单、技术附件和图纸目录，并按物质流、能量流、信息流输出结论。",
+            "question": "请联合分析装出钢机计算、现场反馈、审图单、技术说明、图纸目录、材料表和专利等技术文档，并按物质流、能量流、信息流输出结论。",
         },
     )
     assert analysis.status_code == 200
@@ -536,20 +586,24 @@ def test_project_artifacts_batch_create_all_supported_types():
             "items": [
                 {"artifact_type": "site_feedback", "title": "现场反馈批量", "source_code": "FB-BATCH", "content": "现场反馈内容"},
                 {"artifact_type": "drawing_review", "title": "审图单批量", "source_code": "DR-BATCH", "content": "审图单内容"},
-                {"artifact_type": "technical_attachment", "title": "技术附件批量", "source_code": "TA-BATCH", "content": "技术附件内容"},
+                {"artifact_type": "technical_description", "title": "技术说明批量", "source_code": "TD-BATCH", "content": "技术说明内容"},
                 {"artifact_type": "drawing_catalog", "title": "图纸目录批量", "source_code": "DC-BATCH", "content": "图纸目录内容"},
+                {"artifact_type": "material_list", "title": "材料表批量", "source_code": "ML-BATCH", "content": "材料表内容"},
+                {"artifact_type": "patent_technical_document", "title": "专利等技术文档批量", "source_code": "PTD-BATCH", "content": "专利等技术文档内容"},
             ]
         },
     )
     assert response.status_code == 200
-    assert response.json()["count"] == 4
+    assert response.json()["count"] == 6
 
     artifacts = client.get(f"/api/projects/{project_id}/artifacts").json()
     assert {artifact["artifact_type"] for artifact in artifacts} >= {
         "site_feedback",
         "drawing_review",
-        "technical_attachment",
+        "technical_description",
         "drawing_catalog",
+        "material_list",
+        "patent_technical_document",
     }
 
 

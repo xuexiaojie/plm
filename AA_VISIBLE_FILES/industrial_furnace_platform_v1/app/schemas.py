@@ -137,7 +137,7 @@ class ExecutorResponse(BaseModel):
 
 class ArtifactCreate(BaseModel):
     project_item_id: int | None = None
-    artifact_type: Literal["site_feedback", "drawing_review", "technical_attachment", "drawing_catalog"]
+    artifact_type: Literal["site_feedback", "drawing_review", "technical_description", "drawing_catalog", "material_list", "patent_technical_document"]
     title: str
     source_code: str | None = None
     content: str
@@ -154,4 +154,4 @@ class AiAnalysisRequest(BaseModel):
     analysis_type: str = "equipment_joint_analysis"
     execution_ids: list[int] = Field(default_factory=list)
     artifact_ids: list[int] = Field(default_factory=list)
-    question: str = "请联合分析同一设备的计算结果、现场反馈、审图单、技术附件和图纸目录，并按物质流、能量流、信息流三个维度输出风险点、矛盾点和建议。"
+    question: str = "请联合分析同一设备的计算结果、现场反馈、审图单、技术说明、图纸目录、材料表和专利等技术文档，并按物质流、能量流、信息流三个维度输出风险点、矛盾点和建议。"

@@ -78,8 +78,10 @@ ROLE_NAMES = {
 ARTIFACT_TYPES = {
     "site_feedback": "现场反馈",
     "drawing_review": "审图单",
-    "technical_attachment": "技术附件",
+    "technical_description": "技术说明",
     "drawing_catalog": "图纸目录",
+    "material_list": "材料表",
+    "patent_technical_document": "专利等技术文档",
 }
 
 PROJECT_MANAGER_CANDIDATES = ["张工", "李工", "王工", "赵工"]
@@ -746,7 +748,7 @@ def create_ai_analysis(
         "executions": executions,
         "artifacts": artifacts,
     }
-    prompt = "请基于以下 JSON 进行工业炉设备联合分析，重点比较计算结果、现场反馈、审图单、技术附件、图纸目录之间的一致性，并按物质流、能量流、信息流三个维度输出结论。\n" + json.dumps(request_data, ensure_ascii=False, indent=2)
+    prompt = "请基于以下 JSON 进行工业炉设备联合分析，重点比较计算结果、现场反馈、审图单、技术说明、图纸目录、材料表、专利等技术文档之间的一致性，并按物质流、能量流、信息流三个维度输出结论。\n" + json.dumps(request_data, ensure_ascii=False, indent=2)
     ai_result = run_joint_analysis(prompt)
     analysis = models.AiAnalysis(
         project_id=project_id,
