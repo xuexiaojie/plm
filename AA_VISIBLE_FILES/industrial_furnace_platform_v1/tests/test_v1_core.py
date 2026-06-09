@@ -37,6 +37,11 @@ def test_index_page_loads_console():
     assert "项目管理" in response.text
     assert "计算管理" in response.text
     assert "工程项目" in response.text
+    assert "工程项目模糊查询" in response.text
+    assert "calcProjectSearch" in response.text
+    assert "输入项目经理、工程项目名称、企业或项目介绍" in response.text
+    assert "renderCalcProjectOptions" in response.text
+    assert "calcProjectSearchText" in response.text
     assert "请先选择工程项目" in response.text
     assert "点击具体计算模块前，必须先选择工程项目" in response.text
     assert "calcProjectInfo" in response.text
@@ -60,6 +65,26 @@ def test_index_page_loads_console():
     assert "辊底炉" in response.text
     assert "环形炉" in response.text
     assert "步进炉二级离线模型" in response.text
+    assert "梁式步进炉二级离线模型" in response.text
+    assert "钢坯温度预报模型" in response.text
+    assert "分区炉温优化设定模型" in response.text
+    assert "二级模型模式" in response.text
+    assert "simulate 仅仿真" in response.text
+    assert "optimize 炉温优化" in response.text
+    assert "simulateLevel2Offline" in response.text
+    assert "optimizeLevel2Offline" in response.text
+    assert "appendLevel2Optimization" in response.text
+    assert "level2Cp" in response.text
+    assert "level2Conductivity" in response.text
+    assert "final_surface_temp_c" in response.text
+    assert "final_core_temp_c" in response.text
+    assert "final_average_temp_c" in response.text
+    assert "discharge_temp_error_c" in response.text
+    assert "surface_core_delta_c" in response.text
+    assert "max_heating_rate_c_per_min" in response.text
+    assert "zone_setpoints_c" in response.text
+    assert "zone_snapshots" in response.text
+    assert "出炉温度偏差、表里温差、升温速率、能耗代理项和氧化烧损代理项" in response.text
     assert "renderWalkingOfflineModel" in response.text
     assert "runWalkingOfflineModel" in response.text
     assert "closeCalcModal" in response.text
@@ -142,6 +167,16 @@ def test_index_page_loads_console():
     assert "runMultiScenarioModel" in response.text
     assert "工况风险矩阵" in response.text
     assert "辊底炉二级离线模型" in response.text
+    assert "辊强度计算" in response.text
+    assert "renderRollerStrengthModel" in response.text
+    assert "runRollerStrengthModel" in response.text
+    assert "drawRollerStrengthCanvas" in response.text
+    assert "辊强度和挠度满足要求" in response.text
+    assert "弯曲应力" in response.text
+    assert "剪应力" in response.text
+    assert "高温许用应力" in response.text
+    assert "安全系数" in response.text
+    assert "roller-strength" in response.text
     assert "环形炉二级离线模型" in response.text
     assert "offlineFurnaceConfigs" in response.text
     assert "renderIndustrialOfflineModel" in response.text
