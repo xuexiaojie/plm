@@ -25,11 +25,11 @@ def _artifact_answer(prompt: str) -> str:
     keywords = [word for word in question.replace("，", " ").replace("。", " ").replace("？", " ").replace("?", " ").split() if len(word) >= 2]
     for artifact in artifacts:
         title = str(artifact.get("title") or "")
-        content = str(artifact.get("content") or "")
+        content = str(artifact.get("content") or artifact.get("content_preview") or "")
         text = f"{title}\n{content}"
         if not keywords or any(keyword in text for keyword in keywords):
             matched.append((artifact.get("type_name") or artifact.get("type") or "项目资料", title, content))
-    rows = matched or [(artifact.get("type_name") or artifact.get("type") or "项目资料", artifact.get("title") or "未命名资料", artifact.get("content") or "") for artifact in artifacts]
+    rows = matched or [(artifact.get("type_name") or artifact.get("type") or "项目资料", artifact.get("title") or "未命名资料", artifact.get("content") or artifact.get("content_preview") or "") for artifact in artifacts]
     answer_lines = [f"根据项目资料，针对“{question or '当前问题'}”可以看到："]
     for index, (type_name, title, content) in enumerate(rows[:6], start=1):
         snippet = " ".join(str(content).split())[:180]

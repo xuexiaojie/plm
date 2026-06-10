@@ -612,6 +612,21 @@ def test_artifacts_and_ai_joint_analysis_use_mock_without_api_config():
     db.close()
     assert request_json["retrieved_chunks"]
     assert "装出钢机现场安装空间" in request_json["retrieved_chunks"][0]["content"]
+    assert "content" not in request_json["artifacts"][0]
+
+    project_wide_analysis = client.post(
+        f"/api/projects/{project_id}/ai-analyses",
+        headers={"X-Role": "engineer"},
+        json={
+            "project_item_id": item_id,
+            "equipment_name": "项目资料",
+            "execution_ids": [],
+            "artifact_ids": [],
+            "question": "装出钢机出现过什么问题？",
+        },
+    )
+    assert project_wide_analysis.status_code == 200
+    assert "装出钢机现场安装空间与计算假设需要联合复核" in project_wide_analysis.json()["result"]["answer"]
 
 
 def test_project_artifacts_batch_create_all_supported_types():
@@ -669,7 +684,9 @@ def test_upload_docx_artifact_extracts_text_content():
     assert response.json()["parse_status"] == "已解析 Word 正文"
 
     artifacts = client.get(f"/api/projects/{project_id}/artifacts").json()
-    assert "土耳其项目反馈：炉门密封不严" in artifacts[0]["content"]
+    assert "content" not in artifacts[0]
+    assert artifacts[0]["content_length"] > len("土耳其项目反馈：炉门密封不严")
+    assert "土耳其项目反馈：炉门密封不严" in artifacts[0]["content_preview"]
     db = SessionLocal()
     chunks = db.query(models.ProjectArtifactChunk).filter_by(artifact_id=response.json()["id"]).all()
     db.close()

@@ -184,6 +184,13 @@ def _artifact_response(artifact: models.ProjectArtifact) -> dict:
     return {"id": artifact.id, "artifact_type": artifact.artifact_type, "type_name": ARTIFACT_TYPES[artifact.artifact_type], "title": artifact.title}
 
 
+def _content_preview(content: str, limit: int = 240) -> str:
+    compact = " ".join(content.split())
+    if len(compact) <= limit:
+        return compact
+    return compact[:limit].rstrip() + "..."
+
+
 def _chunk_text(text: str, size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> list[str]:
     compact = re.sub(r"\n{3,}", "\n\n", text.strip())
     if not compact:
@@ -559,7 +566,8 @@ def list_artifacts(project_id: int, project_item_id: int | None = None, db: Sess
             "type_name": ARTIFACT_TYPES.get(artifact.artifact_type, artifact.artifact_type),
             "title": artifact.title,
             "source_code": artifact.source_code,
-            "content": artifact.content,
+            "content_preview": _content_preview(artifact.content),
+            "content_length": len(artifact.content),
         }
         for artifact in artifacts
     ]
@@ -909,8 +917,9 @@ def create_ai_analysis(
                 "result": json.loads(result.output_json) if result else None,
             }
         )
+    selected_artifact_ids = payload.artifact_ids or [artifact.id for artifact in db.query(models.ProjectArtifact).filter_by(project_id=project_id, status="ACTIVE").all()]
     artifacts = []
-    for artifact_id in payload.artifact_ids:
+    for artifact_id in selected_artifact_ids:
         artifact = db.get(models.ProjectArtifact, artifact_id)
         if artifact is None:
             raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": f"资料不存在: {artifact_id}"})
@@ -922,10 +931,10 @@ def create_ai_analysis(
                 "type": artifact.artifact_type,
                 "type_name": ARTIFACT_TYPES.get(artifact.artifact_type, artifact.artifact_type),
                 "title": artifact.title,
-                "content": artifact.content,
+                "content_preview": _content_preview(artifact.content),
             }
         )
-    retrieved_chunks = _search_artifact_chunks(db, project_id, payload.question, payload.artifact_ids)
+    retrieved_chunks = _search_artifact_chunks(db, project_id, payload.question, selected_artifact_ids)
     request_data = {
         "equipment_name": payload.equipment_name,
         "analysis_type": payload.analysis_type,
