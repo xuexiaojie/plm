@@ -97,7 +97,7 @@ def test_seed_creates_demo_project_and_templates():
 def test_index_page_loads_console():
     response = client.get("/")
     assert response.status_code == 200
-    assert "工业炉计算平台 V1.0" in response.text
+    assert "工业炉设计助手 v 1.0" in response.text
     assert "登录进入主界面" in response.text
     assert "请先登录，再进入主界面" in response.text
     assert "项目管理" in response.text
@@ -161,13 +161,13 @@ def test_index_page_loads_console():
     assert "文件分类标签" in response.text
     assert "文件列表区" in response.text
     assert "artifact-project-item" in response.text
-    assert "artifact-file-card" in response.text
-    assert "artifact-file-icon" in response.text
+    assert "artifact-file-table" in response.text
+    assert "artifact-file-kind" in response.text
     assert "artifact-file-actions" in response.text
     assert "artifactTypeTabs" in response.text
     assert "artifactFileIcon" in response.text
     assert "downloadArtifactFile" in response.text
-    assert "在线预览" in response.text
+    assert "预览" in response.text
     assert "下载" in response.text
     assert "industrial-v1-last-artifact-project" in response.text
     assert "资料内容" in response.text
@@ -580,29 +580,100 @@ def test_approval_and_official_report_flow():
     execution = db.query(models.CalcExecution).order_by(models.CalcExecution.id.desc()).first()
     db.close()
 
-    submitted = client.post(f"/api/executions/{execution.id}/approval", headers={"X-Role": "engineer"})
+    submitted = client.post(f"/api/executions/{execution.id}/approval", headers={"X-Role": "engineer", "X-User-Id": "11"})
     assert submitted.status_code == 200
     approval_id = submitted.json()["id"]
     db = SessionLocal()
     submit_log = db.query(models.ApprovalLog).filter_by(approval_request_id=approval_id, action="submit").one()
     approval = db.get(models.ApprovalRequest, approval_id)
+    steps = db.query(models.ApprovalStep).filter_by(approval_request_id=approval_id).order_by(models.ApprovalStep.step_order.asc()).all()
     db.close()
-    assert approval.status == "SUBMITTED"
+    assert approval.status == "IN_REVIEW"
+    assert approval.submitted_by == 11
     assert submit_log.from_status == "DRAFT"
-    assert submit_log.to_status == "SUBMITTED"
+    assert submit_log.to_status == "IN_REVIEW"
+    assert submit_log.actor_user_id == 11
+    assert [step.status for step in steps] == ["PENDING", "WAITING"]
 
-    approved = client.post(f"/api/approvals/{approval_id}/approve", headers={"X-Role": "reviewer"})
+    approved = client.post(
+        f"/api/approvals/{approval_id}/approve",
+        headers={"X-Role": "reviewer", "X-User-Id": "21"},
+        json={"comment": "专业校核通过"},
+    )
     assert approved.status_code == 200
-    assert approved.json()["status"] == "APPROVED"
+    assert approved.json()["status"] == "IN_REVIEW"
+    assert approved.json()["current_approver_id"] == 31
+
+    final_approved = client.post(
+        f"/api/approvals/{approval_id}/approve",
+        headers={"X-Role": "chief_reviewer", "X-User-Id": "31"},
+        json={"comment": "总审通过"},
+    )
+    assert final_approved.status_code == 200
+    assert final_approved.json()["status"] == "APPROVED"
 
     report = client.post(f"/api/executions/{execution.id}/reports", headers={"X-Role": "engineer"})
     assert report.status_code == 200
-    assert report.json()["status"] == "OFFICIAL"
-    assert report.json()["report_no"].startswith("RPT-")
+    assert report.json()["status"] == "DRAFT"
+    assert report.json()["watermark"].startswith("草稿")
+
+    published = client.post(f"/api/reports/{report.json()['id']}/publish", headers={"X-Role": "report_admin", "X-User-Id": "41"})
+    assert published.status_code == 200
+    assert published.json()["status"] == "OFFICIAL"
+    assert published.json()["report_no"].startswith("RPT-")
 
     download = client.get(f"/api/reports/{report.json()['id']}/download", headers={"X-Role": "engineer"})
     assert download.status_code == 200
     assert "工业炉计算报告 V1.0" in download.text
+    assert "审批状态: APPROVED" in download.text
+
+
+def test_approval_return_and_publish_guard():
+    init_db()
+    client.post("/api/seed")
+    project_id = client.get("/api/projects").json()[0]["id"]
+    item_id = client.get(f"/api/projects/{project_id}/items").json()[0]["id"]
+    calc_node = next(node for node in client.get(f"/api/items/{item_id}/nodes").json() if node["node_type"] == "calc")
+
+    client.post(
+        f"/api/nodes/{calc_node['id']}/executions",
+        headers={"X-Role": "engineer", "X-User-Id": "11"},
+        json={
+            "inputs": {
+                "material_type": "carbon_steel",
+                "workpiece_thickness_mm": 120,
+                "initial_temp_c": 25,
+                "target_discharge_temp_c": 1180,
+                "residence_time_min": 180,
+            }
+        },
+    )
+    db = SessionLocal()
+    execution = db.query(models.CalcExecution).order_by(models.CalcExecution.id.desc()).first()
+    db.close()
+
+    submitted = client.post(f"/api/executions/{execution.id}/approval", headers={"X-Role": "engineer", "X-User-Id": "11"})
+    approval_id = submitted.json()["id"]
+    returned = client.post(
+        f"/api/approvals/{approval_id}/return",
+        headers={"X-Role": "reviewer", "X-User-Id": "21"},
+        json={"comment": "请补充热平衡说明"},
+    )
+    assert returned.status_code == 200
+    assert returned.json()["status"] == "RETURNED"
+
+    report = client.post(f"/api/executions/{execution.id}/reports", headers={"X-Role": "engineer", "X-User-Id": "11"})
+    assert report.status_code == 200
+    publish = client.post(f"/api/reports/{report.json()['id']}/publish", headers={"X-Role": "report_admin", "X-User-Id": "41"})
+    assert publish.status_code == 409
+    assert publish.json()["detail"]["code"] == "STATE_INVALID"
+
+    wrong_user = client.post(
+        f"/api/approvals/{approval_id}/approve",
+        headers={"X-Role": "reviewer", "X-User-Id": "22"},
+        json={"comment": "越权审批"},
+    )
+    assert wrong_user.status_code == 409 or wrong_user.status_code == 403
 
 
 def test_comparison_group_returns_outputs():

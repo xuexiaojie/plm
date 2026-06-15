@@ -4,7 +4,7 @@ import json
 import re
 import zipfile
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 from time import perf_counter
@@ -18,6 +18,7 @@ from openpyxl import load_workbook
 from PIL import Image, UnidentifiedImageError
 from pypdf import PdfReader
 from sqlalchemy.orm import Session
+from sqlalchemy.orm import joinedload
 import xlrd
 
 from app import models
@@ -25,6 +26,7 @@ from app.ai_client import run_joint_analysis
 from app.db import SessionLocal, get_db, init_db
 from app.executors import run_template
 from app.schemas import (
+    ApprovalActionRequest,
     AiAnalysisRequest,
     ArtifactBatchCreate,
     ArtifactCreate,
@@ -43,11 +45,26 @@ from app.seed import seed_all
 
 BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_DIR = BASE_DIR.parent / "uploaded_artifacts"
+_cached_index_html = ""
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _build_index_html() -> str:
+    with open(BASE_DIR / "static" / "index.html", encoding="utf-8") as page:
+        html = page.read().replace("AI 联合分析", "AI 问答")
+        html = html.replace('id="artifactFileSummary" class="meta">可一次选择多个文档、图片或视频。', 'id="artifactFileSummary" class="meta">可一次选择多个文档、图片或视频。.docx、.xls、.xlsx、PDF 和文本类附件会自动读取正文，图片会提取元信息。')
+        html = html.replace('id="artifactBatchDocSummary" class="meta">只支持文档文件，每个文档将生成一个资料条目。', 'id="artifactBatchDocSummary" class="meta">只支持文档文件，每个文档将生成一个资料条目。.docx、.xls、.xlsx、PDF 和文本类附件会自动读取正文。')
+        return html
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global _cached_index_html
     init_db()
+    _cached_index_html = _build_index_html()
     db = SessionLocal()
     try:
         _clear_legacy_artifact_retrieval_state(db)
@@ -62,10 +79,12 @@ app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 ROLE_PERMISSIONS = {
     "engineer": {"execution:run", "approval:submit", "report:create", "report:download", "comparison:create", "artifact:manage", "ai:analyze", "read"},
-    "reviewer": {"approval:review", "report:create", "report:download", "read"},
+    "reviewer": {"approval:review", "report:download", "read"},
+    "chief_reviewer": {"approval:review", "report:publish", "report:download", "read"},
+    "report_admin": {"report:create", "report:publish", "report:download", "read"},
     "template_admin": {"template:manage", "report:download", "read"},
     "algorithm_admin": {"execution:run", "template:manage", "report:download", "read"},
-    "admin": {"*"},
+    "admin": {"*", "permission:assign"},
     "readonly": {"read", "report:download"},
 }
 
@@ -74,22 +93,42 @@ PERMISSION_CATALOG = [
     {"code": "execution:run", "name": "执行计算", "description": "发起计算执行并生成结果快照"},
     {"code": "approval:submit", "name": "提交审批", "description": "把计算结果提交给审核人"},
     {"code": "approval:review", "name": "审批处理", "description": "执行审批通过或退回"},
-    {"code": "report:create", "name": "生成报告", "description": "生成草稿报告或正式报告"},
+    {"code": "report:create", "name": "生成草稿报告", "description": "基于计算结果生成草稿报告"},
+    {"code": "report:publish", "name": "发布正式报告", "description": "在审批完成后发布正式报告"},
     {"code": "report:download", "name": "下载报告", "description": "下载已生成报告文本"},
     {"code": "comparison:create", "name": "横向对比", "description": "创建和查看横向对比组"},
     {"code": "artifact:manage", "name": "资料管理", "description": "新增和批量录入项目资料"},
     {"code": "ai:analyze", "name": "AI 问答", "description": "根据项目资料回答问题"},
     {"code": "template:manage", "name": "模板管理", "description": "维护计算模板和算法入口"},
+    {"code": "permission:assign", "name": "权限分配", "description": "维护角色权限配置"},
 ]
 
 ROLE_NAMES = {
     "engineer": "普通计算人员",
-    "reviewer": "审核人",
+    "reviewer": "专业校核人",
+    "chief_reviewer": "总审人",
+    "report_admin": "文控专员",
     "template_admin": "模板管理员",
     "algorithm_admin": "算法维护人员",
     "admin": "系统管理员",
     "readonly": "只读用户",
 }
+
+USER_CATALOG = [
+    {"id": 1, "name": "赵总", "role": "admin", "title": "系统管理员", "department": "平台管理"},
+    {"id": 11, "name": "张工", "role": "engineer", "title": "工艺工程师", "department": "炉窑设计"},
+    {"id": 12, "name": "李工", "role": "engineer", "title": "设备工程师", "department": "炉窑设计"},
+    {"id": 21, "name": "王工", "role": "reviewer", "title": "专业校核", "department": "工艺审核"},
+    {"id": 22, "name": "周工", "role": "reviewer", "title": "专业校核", "department": "结构审核"},
+    {"id": 31, "name": "陈总工", "role": "chief_reviewer", "title": "总审", "department": "技术中心"},
+    {"id": 41, "name": "孙文控", "role": "report_admin", "title": "文控专员", "department": "项目管理"},
+    {"id": 51, "name": "模板管理员", "role": "template_admin", "title": "模板管理员", "department": "平台管理"},
+    {"id": 61, "name": "算法管理员", "role": "algorithm_admin", "title": "算法维护人员", "department": "平台管理"},
+    {"id": 71, "name": "访客", "role": "readonly", "title": "只读用户", "department": "访客"},
+]
+USER_BY_ID = {user["id"]: user for user in USER_CATALOG}
+ROLE_USER_IDS = {user["role"]: user["id"] for user in USER_CATALOG}
+APPROVAL_FLOW_USER_IDS = [21, 31]
 
 
 ARTIFACT_TYPES = {
@@ -109,12 +148,15 @@ IMAGE_FILE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif",
 
 
 @app.get("/", response_class=HTMLResponse)
-def index() -> str:
-    with open(BASE_DIR / "static" / "index.html", encoding="utf-8") as page:
-        html = page.read().replace("AI 联合分析", "AI 问答")
-        html = html.replace('id="artifactFileSummary" class="meta">可一次选择多个文档、图片或视频。', 'id="artifactFileSummary" class="meta">可一次选择多个文档、图片或视频。.docx、.xls、.xlsx、PDF 和文本类附件会自动读取正文，图片会提取元信息。')
-        html = html.replace('id="artifactBatchDocSummary" class="meta">只支持文档文件，每个文档将生成一个资料条目。', 'id="artifactBatchDocSummary" class="meta">只支持文档文件，每个文档将生成一个资料条目。.docx、.xls、.xlsx、PDF 和文本类附件会自动读取正文。')
-        return html
+def index() -> HTMLResponse:
+    return HTMLResponse(
+        content=_cached_index_html or _build_index_html(),
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 
 def require_permission(permission: str, role: str | None = Header(default="admin", alias="X-Role")) -> str:
@@ -129,6 +171,26 @@ def permission_dependency(permission: str):
         return require_permission(permission, x_role)
 
     return dependency
+
+
+def get_current_user(
+    x_role: str | None = Header(default="admin", alias="X-Role"),
+    x_user_id: int | None = Header(default=None, alias="X-User-Id"),
+) -> dict:
+    if x_user_id is not None:
+        user = USER_BY_ID.get(x_user_id)
+        if user is None:
+            raise HTTPException(status_code=400, detail={"code": "PARAM_INVALID", "message": "当前用户不存在"})
+        if x_role and x_role != user["role"]:
+            raise HTTPException(status_code=400, detail={"code": "PARAM_INVALID", "message": "用户与角色不匹配"})
+        return user
+    role_code = x_role or "admin"
+    user_id = ROLE_USER_IDS.get(role_code, ROLE_USER_IDS["admin"])
+    return USER_BY_ID[user_id]
+
+
+def get_current_user_id(current_user: dict = Depends(get_current_user)) -> int:
+    return int(current_user["id"])
 
 
 def _permission_snapshot() -> dict:
@@ -333,7 +395,7 @@ def _build_pasted_image_context(images: list[ClipboardImageInput]) -> list[dict]
 
 def _soft_delete_artifact(db: Session, artifact: models.ProjectArtifact) -> None:
     artifact.status = "DELETED"
-    artifact.deleted_at = datetime.utcnow()
+    artifact.deleted_at = utc_now()
     _clear_artifact_chunks(db, artifact_id=artifact.id)
 
 
@@ -529,6 +591,27 @@ def list_permissions(role: str = Depends(permission_dependency("read"))) -> dict
     return _permission_snapshot()
 
 
+@app.get("/api/users")
+def list_users(role: str = Depends(permission_dependency("read"))) -> list[dict]:
+    return [
+        {
+            **user,
+            "role_name": ROLE_NAMES.get(user["role"], user["role"]),
+            "permissions": sorted(ROLE_PERMISSIONS.get(user["role"], set())),
+        }
+        for user in USER_CATALOG
+    ]
+
+
+@app.get("/api/current-user")
+def get_current_user_profile(current_user: dict = Depends(get_current_user)) -> dict:
+    return {
+        **current_user,
+        "role_name": ROLE_NAMES.get(current_user["role"], current_user["role"]),
+        "permissions": sorted(ROLE_PERMISSIONS.get(current_user["role"], set())),
+    }
+
+
 @app.put("/api/permissions/roles/{role_code}")
 def update_role_permissions(role_code: str, payload: PermissionAssignment, role: str = Depends(permission_dependency("permission:assign"))) -> dict:
     if role_code not in ROLE_PERMISSIONS:
@@ -588,7 +671,7 @@ def list_project_management_projects(db: Session = Depends(get_db)) -> list[dict
 @app.post("/api/project-management/projects")
 def create_project_management_project(payload: ProjectManagementCreate, db: Session = Depends(get_db)) -> dict:
     project = models.Project(
-        code=f"PRJ-MGMT-{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}-{uuid4().hex[:6]}",
+        code=f"PRJ-MGMT-{utc_now().strftime('%Y%m%d%H%M%S%f')}-{uuid4().hex[:6]}",
         name=payload.project_name,
         owner_user_id=2,
         status="ACTIVE",
@@ -619,7 +702,7 @@ def create_project_management_projects_batch(payload: ProjectManagementBatchCrea
     projects = []
     for item in payload.items:
         project = models.Project(
-            code=f"PRJ-MGMT-{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}-{uuid4().hex[:6]}",
+            code=f"PRJ-MGMT-{utc_now().strftime('%Y%m%d%H%M%S%f')}-{uuid4().hex[:6]}",
             name=item.project_name,
             owner_user_id=2,
             status="ACTIVE",
@@ -674,7 +757,7 @@ def delete_calc_item(item_id: int, db: Session = Depends(get_db)) -> dict:
     item = db.get(models.ProjectItem, item_id)
     if item is None or item.deleted_at is not None:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "计算名目不存在"})
-    item.deleted_at = datetime.utcnow()
+    item.deleted_at = utc_now()
     item.status = "DELETED"
     db.commit()
     return {"id": item.id, "status": item.status}
@@ -904,8 +987,8 @@ def execute_node(
     if item is None or template is None:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "名目或模板不存在"})
 
-    execution_no = f"EXEC-{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}-{node_id}-{uuid4().hex[:8]}"
-    started = datetime.utcnow()
+    execution_no = f"EXEC-{utc_now().strftime('%Y%m%d%H%M%S%f')}-{node_id}-{uuid4().hex[:8]}"
+    started = utc_now()
     begin = perf_counter()
     execution = models.CalcExecution(
         execution_no=execution_no,
@@ -924,7 +1007,7 @@ def execute_node(
 
     response = run_template(template.code, payload.inputs)
     execution.status = "SUCCESS" if response.success else "FAILED"
-    execution.finished_at = datetime.utcnow()
+    execution.finished_at = utc_now()
     execution.duration_ms = int((perf_counter() - begin) * 1000)
     db.add(
         models.CalcResult(
@@ -946,7 +1029,7 @@ def get_execution(execution_id: int, db: Session = Depends(get_db)) -> dict:
     execution = db.get(models.CalcExecution, execution_id)
     if execution is None:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "执行记录不存在"})
-    result = db.query(models.CalcResult).filter_by(execution_id=execution.id).one_or_none()
+    result = execution.result
     return {
         "id": execution.id,
         "execution_no": execution.execution_no,
@@ -957,11 +1040,20 @@ def get_execution(execution_id: int, db: Session = Depends(get_db)) -> dict:
 
 
 @app.get("/api/executions")
-def list_executions(db: Session = Depends(get_db)) -> list[dict]:
-    executions = db.query(models.CalcExecution).order_by(models.CalcExecution.id.desc()).limit(20).all()
+def list_executions(limit: int = 20, offset: int = 0, db: Session = Depends(get_db)) -> list[dict]:
+    safe_limit = max(1, min(limit, 100))
+    safe_offset = max(offset, 0)
+    executions = (
+        db.query(models.CalcExecution)
+        .options(joinedload(models.CalcExecution.result))
+        .order_by(models.CalcExecution.id.desc())
+        .offset(safe_offset)
+        .limit(safe_limit)
+        .all()
+    )
     rows = []
     for execution in executions:
-        result = db.query(models.CalcResult).filter_by(execution_id=execution.id).one_or_none()
+        result = execution.result
         rows.append(
             {
                 "id": execution.id,
@@ -978,87 +1070,252 @@ def list_executions(db: Session = Depends(get_db)) -> list[dict]:
     return rows
 
 
+def _approval_step_payload(step: models.ApprovalStep) -> dict:
+    return {
+        "id": step.id,
+        "step_order": step.step_order,
+        "role_code": step.role_code,
+        "role_name": ROLE_NAMES.get(step.role_code, step.role_code),
+        "approver_user_id": step.approver_user_id,
+        "approver_name": step.approver_name,
+        "status": step.status,
+        "comment": step.comment,
+        "acted_at": step.acted_at.isoformat() if step.acted_at else None,
+    }
+
+
+def _approval_payload(db: Session, approval: models.ApprovalRequest) -> dict:
+    steps = (
+        db.query(models.ApprovalStep)
+        .filter_by(approval_request_id=approval.id)
+        .order_by(models.ApprovalStep.step_order.asc())
+        .all()
+    )
+    execution = db.get(models.CalcExecution, approval.execution_id)
+    submitter = USER_BY_ID.get(approval.submitted_by)
+    current_approver = USER_BY_ID.get(approval.current_approver_id) if approval.current_approver_id else None
+    return {
+        "id": approval.id,
+        "execution_id": approval.execution_id,
+        "execution_no": execution.execution_no if execution else None,
+        "project_id": execution.project_id if execution else None,
+        "status": approval.status,
+        "submitted_by": approval.submitted_by,
+        "submitted_by_name": submitter["name"] if submitter else str(approval.submitted_by),
+        "submitted_at": approval.submitted_at.isoformat() if approval.submitted_at else None,
+        "current_approver_id": approval.current_approver_id,
+        "current_approver_name": current_approver["name"] if current_approver else None,
+        "steps": [_approval_step_payload(step) for step in steps],
+    }
+
+
+def _report_payload(report: models.GeneratedReport) -> dict:
+    return {
+        "id": report.id,
+        "report_no": report.report_no,
+        "execution_id": report.execution_id,
+        "status": report.status,
+        "version": report.version,
+        "file_path": report.file_path,
+        "watermark": report.watermark,
+    }
+
+
+def _report_version(db: Session, execution_id: int) -> str:
+    count = db.query(models.GeneratedReport).filter_by(execution_id=execution_id).count()
+    return f"1.{count}"
+
+
+def _build_report_file_path(execution: models.CalcExecution, version: str) -> str:
+    return f"storage/projects/{execution.project_id}/reports/{execution.execution_no}-v{version}.txt"
+
+
+def _get_current_approval_step(db: Session, approval_id: int) -> models.ApprovalStep | None:
+    return (
+        db.query(models.ApprovalStep)
+        .filter_by(approval_request_id=approval_id, status="PENDING")
+        .order_by(models.ApprovalStep.step_order.asc())
+        .first()
+    )
+
+
+def _get_next_waiting_step(db: Session, approval_id: int, current_order: int) -> models.ApprovalStep | None:
+    return (
+        db.query(models.ApprovalStep)
+        .filter(
+            models.ApprovalStep.approval_request_id == approval_id,
+            models.ApprovalStep.step_order > current_order,
+            models.ApprovalStep.status == "WAITING",
+        )
+        .order_by(models.ApprovalStep.step_order.asc())
+        .first()
+    )
+
+
 @app.post("/api/executions/{execution_id}/approval")
 def submit_approval(
     execution_id: int,
     db: Session = Depends(get_db),
     role: str = Depends(permission_dependency("approval:submit")),
+    current_user: dict = Depends(get_current_user),
 ) -> dict:
     execution = db.get(models.CalcExecution, execution_id)
     if execution is None:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "执行记录不存在"})
+    active_approval = (
+        db.query(models.ApprovalRequest)
+        .filter(
+            models.ApprovalRequest.execution_id == execution_id,
+            models.ApprovalRequest.status.in_(["SUBMITTED", "IN_REVIEW"]),
+        )
+        .order_by(models.ApprovalRequest.id.desc())
+        .first()
+    )
+    if active_approval is not None:
+        raise HTTPException(status_code=409, detail={"code": "STATE_INVALID", "message": "当前执行已有审批流程在进行中"})
     approval = models.ApprovalRequest(
         execution_id=execution.id,
-        status="DRAFT",
-        submitted_by=2,
-        current_approver_id=3,
+        status="IN_REVIEW",
+        submitted_by=int(current_user["id"]),
+        submitted_at=utc_now(),
+        current_approver_id=APPROVAL_FLOW_USER_IDS[0],
     )
     db.add(approval)
     db.flush()
-    approval.status = "SUBMITTED"
-    approval.submitted_at = datetime.utcnow()
+    for index, approver_id in enumerate(APPROVAL_FLOW_USER_IDS, start=1):
+        approver = USER_BY_ID[approver_id]
+        db.add(
+            models.ApprovalStep(
+                approval_request_id=approval.id,
+                step_order=index,
+                role_code=approver["role"],
+                approver_user_id=approver_id,
+                approver_name=approver["name"],
+                status="PENDING" if index == 1 else "WAITING",
+            )
+        )
     db.add(
         models.ApprovalLog(
             approval_request_id=approval.id,
             action="submit",
             from_status="DRAFT",
-            to_status="SUBMITTED",
-            actor_user_id=2,
+            to_status="IN_REVIEW",
+            actor_user_id=int(current_user["id"]),
         )
     )
     db.commit()
     db.refresh(approval)
-    return {"id": approval.id, "status": approval.status}
+    return _approval_payload(db, approval)
+
+
+@app.get("/api/approvals")
+def list_approvals(
+    status: str | None = None,
+    mine_only: bool = False,
+    db: Session = Depends(get_db),
+    role: str = Depends(permission_dependency("read")),
+    current_user: dict = Depends(get_current_user),
+) -> list[dict]:
+    query = db.query(models.ApprovalRequest).order_by(models.ApprovalRequest.id.desc())
+    if status:
+        query = query.filter_by(status=status)
+    rows = query.all()
+    if mine_only:
+        user_id = int(current_user["id"])
+        rows = [row for row in rows if row.current_approver_id == user_id or row.submitted_by == user_id]
+    return [_approval_payload(db, approval) for approval in rows]
+
+
+@app.get("/api/approvals/{approval_id}")
+def get_approval(approval_id: int, db: Session = Depends(get_db), role: str = Depends(permission_dependency("read"))) -> dict:
+    approval = db.get(models.ApprovalRequest, approval_id)
+    if approval is None:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "审批申请不存在"})
+    return _approval_payload(db, approval)
 
 
 @app.post("/api/approvals/{approval_id}/approve")
 def approve_request(
     approval_id: int,
+    payload: ApprovalActionRequest | None = None,
     db: Session = Depends(get_db),
     role: str = Depends(permission_dependency("approval:review")),
+    current_user: dict = Depends(get_current_user),
 ) -> dict:
     approval = db.get(models.ApprovalRequest, approval_id)
     if approval is None:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "审批申请不存在"})
-    if approval.status != "SUBMITTED":
+    if approval.status != "IN_REVIEW":
         raise HTTPException(status_code=409, detail={"code": "STATE_INVALID", "message": "当前状态不可审批通过"})
-    approval.status = "APPROVED"
+    current_step = _get_current_approval_step(db, approval.id)
+    if current_step is None:
+        raise HTTPException(status_code=409, detail={"code": "STATE_INVALID", "message": "当前审批没有待处理步骤"})
+    if current_step.approver_user_id != int(current_user["id"]):
+        raise HTTPException(status_code=403, detail={"code": "PERMISSION_DENIED", "message": "当前用户不是该步骤审批人"})
+    current_step.status = "APPROVED"
+    current_step.comment = payload.comment if payload else None
+    current_step.acted_at = utc_now()
+    next_step = _get_next_waiting_step(db, approval.id, current_step.step_order)
+    from_status = approval.status
+    if next_step is None:
+        approval.status = "APPROVED"
+        approval.current_approver_id = None
+        action = "approve_final"
+    else:
+        next_step.status = "PENDING"
+        approval.current_approver_id = next_step.approver_user_id
+        action = "approve_step"
     db.add(
         models.ApprovalLog(
             approval_request_id=approval.id,
-            action="approve",
-            from_status="SUBMITTED",
-            to_status="APPROVED",
-            actor_user_id=3,
+            action=action,
+            from_status=from_status,
+            to_status=approval.status,
+            comment=payload.comment if payload else None,
+            actor_user_id=int(current_user["id"]),
         )
     )
     db.commit()
-    return {"id": approval.id, "status": approval.status}
+    db.refresh(approval)
+    return _approval_payload(db, approval)
 
 
 @app.post("/api/approvals/{approval_id}/return")
 def return_request(
     approval_id: int,
+    payload: ApprovalActionRequest | None = None,
     db: Session = Depends(get_db),
     role: str = Depends(permission_dependency("approval:review")),
+    current_user: dict = Depends(get_current_user),
 ) -> dict:
     approval = db.get(models.ApprovalRequest, approval_id)
     if approval is None:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "审批申请不存在"})
-    if approval.status != "SUBMITTED":
+    if approval.status != "IN_REVIEW":
         raise HTTPException(status_code=409, detail={"code": "STATE_INVALID", "message": "当前状态不可退回"})
+    current_step = _get_current_approval_step(db, approval.id)
+    if current_step is None:
+        raise HTTPException(status_code=409, detail={"code": "STATE_INVALID", "message": "当前审批没有待处理步骤"})
+    if current_step.approver_user_id != int(current_user["id"]):
+        raise HTTPException(status_code=403, detail={"code": "PERMISSION_DENIED", "message": "当前用户不是该步骤审批人"})
+    current_step.status = "RETURNED"
+    current_step.comment = payload.comment if payload else None
+    current_step.acted_at = utc_now()
     approval.status = "RETURNED"
+    approval.current_approver_id = approval.submitted_by
     db.add(
         models.ApprovalLog(
             approval_request_id=approval.id,
             action="return",
-            from_status="SUBMITTED",
+            from_status="IN_REVIEW",
             to_status="RETURNED",
-            actor_user_id=3,
+            comment=payload.comment if payload else None,
+            actor_user_id=int(current_user["id"]),
         )
     )
     db.commit()
-    return {"id": approval.id, "status": approval.status}
+    db.refresh(approval)
+    return _approval_payload(db, approval)
 
 
 @app.post("/api/executions/{execution_id}/reports")
@@ -1066,25 +1323,64 @@ def create_report(
     execution_id: int,
     db: Session = Depends(get_db),
     role: str = Depends(permission_dependency("report:create")),
+    current_user: dict = Depends(get_current_user),
 ) -> dict:
     execution = db.get(models.CalcExecution, execution_id)
     if execution is None:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "执行记录不存在"})
-    approved = db.query(models.ApprovalRequest).filter_by(execution_id=execution_id, status="APPROVED").one_or_none()
-    status = "OFFICIAL" if approved else "DRAFT"
-    report_no = f"RPT-{datetime.utcnow().strftime('%Y%m%d')}-{uuid4().hex[:6]}" if approved else None
+    version = _report_version(db, execution.id)
     report = models.GeneratedReport(
-        report_no=report_no,
+        report_no=None,
         execution_id=execution.id,
-        status=status,
-        version="1.0",
-        file_path=f"storage/projects/{execution.project_id}/reports/{execution.execution_no}.txt",
-        watermark=None if approved else "草稿",
+        status="DRAFT",
+        version=version,
+        file_path=_build_report_file_path(execution, version),
+        watermark=f"草稿 / {current_user['name']}",
     )
     db.add(report)
     db.commit()
     db.refresh(report)
-    return {"id": report.id, "report_no": report.report_no, "status": report.status, "watermark": report.watermark}
+    return _report_payload(report)
+
+
+@app.get("/api/reports")
+def list_reports(
+    execution_id: int | None = None,
+    db: Session = Depends(get_db),
+    role: str = Depends(permission_dependency("read")),
+) -> list[dict]:
+    query = db.query(models.GeneratedReport).order_by(models.GeneratedReport.id.desc())
+    if execution_id is not None:
+        query = query.filter_by(execution_id=execution_id)
+    return [_report_payload(report) for report in query.all()]
+
+
+@app.post("/api/reports/{report_id}/publish")
+def publish_report(
+    report_id: int,
+    db: Session = Depends(get_db),
+    role: str = Depends(permission_dependency("report:publish")),
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    report = db.get(models.GeneratedReport, report_id)
+    if report is None:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "报告不存在"})
+    if report.status != "DRAFT":
+        raise HTTPException(status_code=409, detail={"code": "STATE_INVALID", "message": "当前报告状态不可发布"})
+    approved = (
+        db.query(models.ApprovalRequest)
+        .filter_by(execution_id=report.execution_id, status="APPROVED")
+        .order_by(models.ApprovalRequest.id.desc())
+        .first()
+    )
+    if approved is None:
+        raise HTTPException(status_code=409, detail={"code": "STATE_INVALID", "message": "审批完成后才能发布正式报告"})
+    report.status = "OFFICIAL"
+    report.report_no = f"RPT-{utc_now().strftime('%Y%m%d')}-{uuid4().hex[:6]}"
+    report.watermark = None
+    db.commit()
+    db.refresh(report)
+    return {**_report_payload(report), "published_by": int(current_user["id"])}
 
 
 @app.get("/api/reports/{report_id}")
@@ -1092,7 +1388,7 @@ def get_report(report_id: int, db: Session = Depends(get_db)) -> dict:
     report = db.get(models.GeneratedReport, report_id)
     if report is None:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "报告不存在"})
-    return {"id": report.id, "report_no": report.report_no, "status": report.status, "file_path": report.file_path}
+    return _report_payload(report)
 
 
 @app.get("/api/reports/{report_id}/download", response_class=PlainTextResponse)
@@ -1106,13 +1402,21 @@ def download_report(
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "报告不存在"})
     execution = db.get(models.CalcExecution, report.execution_id)
     result = db.query(models.CalcResult).filter_by(execution_id=report.execution_id).one_or_none()
+    approval = (
+        db.query(models.ApprovalRequest)
+        .filter_by(execution_id=report.execution_id)
+        .order_by(models.ApprovalRequest.id.desc())
+        .first()
+    )
     output = json.loads(result.output_json) if result else {}
     return "\n".join(
         [
             "工业炉计算报告 V1.0",
             f"报告状态: {report.status}",
             f"报告编号: {report.report_no or 'DRAFT'}",
+            f"报告版本: {report.version}",
             f"执行编号: {execution.execution_no if execution else ''}",
+            f"审批状态: {approval.status if approval else '未提交'}",
             f"是否可行: {output.get('feasible')}",
             f"输出结果: {json.dumps(output.get('outputs', {}), ensure_ascii=False)}",
             f"水印: {report.watermark or '无'}",
@@ -1158,7 +1462,7 @@ def get_comparison(group_id: int, db: Session = Depends(get_db)) -> dict:
 
 
 @app.post("/api/projects/{project_id}/ai-analyses")
-def create_ai_analysis(
+async def create_ai_analysis(
     project_id: int,
     payload: AiAnalysisRequest,
     db: Session = Depends(get_db),
@@ -1221,7 +1525,7 @@ def create_ai_analysis(
         "artifacts": artifacts,
     }
     prompt = json.dumps(request_data, ensure_ascii=False, indent=2)
-    ai_result = run_joint_analysis(prompt)
+    ai_result = await run_joint_analysis(prompt)
     analysis = models.AiAnalysis(
         project_id=project_id,
         project_item_id=payload.project_item_id,

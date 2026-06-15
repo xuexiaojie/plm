@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -6,10 +6,16 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db import Base
 
 
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 class TimestampMixin:
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    __abstract__ = True
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class Project(Base, TimestampMixin):
@@ -132,9 +138,11 @@ class CalcExecution(Base, TimestampMixin):
     input_snapshot_json: Mapped[str] = mapped_column(Text, nullable=False)
     template_snapshot_json: Mapped[str] = mapped_column(Text, nullable=False)
     executor_version: Mapped[str] = mapped_column(String(64), nullable=False)
-    started_at: Mapped[datetime | None] = mapped_column(DateTime)
-    finished_at: Mapped[datetime | None] = mapped_column(DateTime)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     duration_ms: Mapped[int | None] = mapped_column(Integer)
+
+    result: Mapped["CalcResult | None"] = relationship(back_populates="execution")
 
 
 class CalcResult(Base, TimestampMixin):
@@ -149,6 +157,8 @@ class CalcResult(Base, TimestampMixin):
     errors_json: Mapped[str] = mapped_column(Text, nullable=False)
     logs_json: Mapped[str] = mapped_column(Text, nullable=False)
 
+    execution: Mapped[CalcExecution] = relationship(back_populates="result")
+
 
 class ApprovalRequest(Base, TimestampMixin):
     __tablename__ = "approval_requests"
@@ -157,7 +167,7 @@ class ApprovalRequest(Base, TimestampMixin):
     execution_id: Mapped[int] = mapped_column(ForeignKey("calc_executions.id"), nullable=False, index=True)
     status: Mapped[str] = mapped_column(String(32), default="DRAFT", nullable=False)
     submitted_by: Mapped[int] = mapped_column(Integer, nullable=False)
-    submitted_at: Mapped[datetime | None] = mapped_column(DateTime)
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     current_approver_id: Mapped[int | None] = mapped_column(Integer)
 
 
@@ -171,6 +181,20 @@ class ApprovalLog(Base, TimestampMixin):
     to_status: Mapped[str] = mapped_column(String(32), nullable=False)
     comment: Mapped[str | None] = mapped_column(Text)
     actor_user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class ApprovalStep(Base, TimestampMixin):
+    __tablename__ = "approval_steps"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    approval_request_id: Mapped[int] = mapped_column(ForeignKey("approval_requests.id"), nullable=False, index=True)
+    step_order: Mapped[int] = mapped_column(Integer, nullable=False)
+    role_code: Mapped[str] = mapped_column(String(32), nullable=False)
+    approver_user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    approver_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="WAITING")
+    comment: Mapped[str | None] = mapped_column(Text)
+    acted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class GeneratedReport(Base, TimestampMixin):

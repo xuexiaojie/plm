@@ -34,6 +34,10 @@ class PermissionAssignment(BaseModel):
     permissions: list[str]
 
 
+class ApprovalActionRequest(BaseModel):
+    comment: str | None = None
+
+
 class ProjectRead(ProjectCreate):
     id: int
 
@@ -119,7 +123,7 @@ class TemplateCreate(BaseModel):
 
 
 class ExecutionRequest(BaseModel):
-    mode: str = "simulate"
+    mode: Literal["simulate", "official"] = "simulate"
     inputs: dict[str, Any]
     files: list[dict[str, Any]] = Field(default_factory=list)
 

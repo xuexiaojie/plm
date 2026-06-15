@@ -1,8 +1,8 @@
 import json
 import os
-import urllib.error
-import urllib.request
 from typing import Any
+
+import httpx
 
 
 def _artifact_answer(prompt: str) -> str:
@@ -41,7 +41,7 @@ def _artifact_answer(prompt: str) -> str:
     return "\n".join(answer_lines)
 
 
-def run_joint_analysis(prompt: str) -> dict[str, Any]:
+async def run_joint_analysis(prompt: str) -> dict[str, Any]:
     api_url = os.getenv("AI_API_URL")
     api_key = os.getenv("AI_API_KEY")
     model = os.getenv("AI_MODEL", "industrial-furnace-v1")
@@ -61,16 +61,16 @@ def run_joint_analysis(prompt: str) -> dict[str, Any]:
         ],
         "temperature": 0.2,
     }
-    request = urllib.request.Request(
-        api_url,
-        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
-        method="POST",
-    )
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
-            data = json.loads(response.read().decode("utf-8"))
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.post(
+                api_url,
+                json=payload,
+                headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
+            )
+            response.raise_for_status()
+            data = response.json()
+    except (httpx.HTTPError, json.JSONDecodeError) as exc:
         return {"provider": "api", "summary": "大模型 API 调用失败", "errors": [str(exc)]}
 
     content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
