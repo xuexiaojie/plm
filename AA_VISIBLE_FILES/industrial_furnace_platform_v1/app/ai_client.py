@@ -11,12 +11,12 @@ def _artifact_answer(prompt: str) -> str:
     except json.JSONDecodeError:
         return "没有读取到可用于回答的项目资料。"
     question = str(data.get("question") or "").strip()
-    retrieved_chunks = data.get("retrieved_chunks") or []
-    if retrieved_chunks:
-        answer_lines = [f"根据已检索到的跨文件资料片段，针对“{question or '当前问题'}”可以看到："]
-        for index, chunk in enumerate(retrieved_chunks[:8], start=1):
-            snippet = " ".join(str(chunk.get("content") or "").split())[:220]
-            answer_lines.append(f"{index}. {chunk.get('type_name') or '项目资料'}《{chunk.get('title') or '未命名资料'}》片段 {chunk.get('chunk_index', 0)}：{snippet or '未读取到片段内容'}")
+    retrieved_artifacts = data.get("retrieved_artifacts") or []
+    if retrieved_artifacts:
+        answer_lines = [f"根据当前项目中已检索到的资料，针对“{question or '当前问题'}”可以看到："]
+        for index, artifact in enumerate(retrieved_artifacts[:8], start=1):
+            snippet = " ".join(str(artifact.get("content") or "").split())[:220]
+            answer_lines.append(f"{index}. {artifact.get('type_name') or '项目资料'}《{artifact.get('title') or '未命名资料'}》：{snippet or '未读取到资料内容'}")
         return "\n".join(answer_lines)
     artifacts = data.get("artifacts") or []
     if not artifacts:
@@ -33,8 +33,8 @@ def _artifact_answer(prompt: str) -> str:
     answer_lines = [f"根据项目资料，针对“{question or '当前问题'}”可以看到："]
     for index, (type_name, title, content) in enumerate(rows[:6], start=1):
         snippet = " ".join(str(content).split())[:180]
-        if "当前版本只能直接读取文本类附件正文" in snippet or "PDF、Word、Excel" in snippet:
-            snippet = "这条资料是旧版上传记录，只保存了附件清单，没有解析到 Word 正文；请重新上传 .docx，系统会自动解析正文。"
+        if "当前版本仅支持自动解析 .docx 和文本类附件正文" in snippet or "当前版本只能直接读取文本类附件正文" in snippet:
+            snippet = "这条资料是旧版上传记录，只保存了附件清单，没有保存原始文件；请重新上传原 PDF，系统会自动解析可复制文本。"
         answer_lines.append(f"{index}. {type_name}《{title}》记录：{snippet or '未填写具体内容'}")
     if len(rows) > 6:
         answer_lines.append(f"另外还有 {len(rows) - 6} 条项目资料可继续复核。")
@@ -56,7 +56,7 @@ def run_joint_analysis(prompt: str) -> dict[str, Any]:
     payload = {
         "model": model,
         "messages": [
-            {"role": "system", "content": "你是工业炉项目资料问答助手。只根据用户提供的项目资料、检索片段和计算记录回答问题，回答应直接、简洁、像聊天一样。优先使用 retrieved_chunks，这些是系统从当前项目多个文件切片和向量检索得到的相关片段。当前系统已支持解析 .docx Word 正文；资料内容中出现“已解析 Word 正文”时，必须直接基于其后面的正文回答。资料内容中出现“当前版本只能直接读取文本类附件正文”或“PDF、Word、Excel”时，说明这是旧版上传记录，应提示用户重新上传 .docx，而不要说当前系统不能读取 Word。"},
+            {"role": "system", "content": "你是工业炉项目资料问答助手。只根据用户提供的项目资料、资料检索结果和计算记录回答问题，回答应直接、简洁、像聊天一样。优先使用 retrieved_artifacts。当前系统已支持解析 .docx、.xls、.xlsx、PDF 可复制文本、文本类附件正文，以及图片元信息；tif 和 tiff 也按图片处理。资料内容中出现“已解析 Word 正文”“已解析 PDF 文本”“已解析 Excel 表格”或“已提取图片元信息”时，必须直接基于这些内容回答。资料内容中出现“当前版本仅支持自动解析 .docx 和文本类附件正文”或“当前版本只能直接读取文本类附件正文”时，说明这是旧版上传记录，应提示用户重新上传原文件。"},
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.2,

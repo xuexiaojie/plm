@@ -1,7 +1,12 @@
+import base64
 import os
 import json
 import zipfile
 from io import BytesIO
+from pathlib import Path
+
+from PIL import Image
+import xlwt
 
 os.environ["DATABASE_URL"] = "sqlite:///:memory:"
 
@@ -13,6 +18,7 @@ from app.main import app
 
 
 client = TestClient(app)
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def build_docx(text: str) -> bytes:
@@ -21,6 +27,54 @@ def build_docx(text: str) -> bytes:
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>{text}</w:t></w:r></w:p></w:body></w:document>'''
     with zipfile.ZipFile(buffer, "w") as archive:
         archive.writestr("word/document.xml", document)
+    return buffer.getvalue()
+
+
+def build_pdf(text: str) -> bytes:
+    stream = f"BT /F1 12 Tf 50 150 Td ({text}) Tj ET".encode("latin-1")
+    objects = [
+        b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
+        b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n",
+        b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>\nendobj\n",
+        b"4 0 obj\n<< /Length " + str(len(stream)).encode("ascii") + b" >>\nstream\n" + stream + b"\nendstream\nendobj\n",
+        b"5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n",
+    ]
+    pdf = bytearray(b"%PDF-1.4\n")
+    offsets = [0]
+    for item in objects:
+        offsets.append(len(pdf))
+        pdf.extend(item)
+    xref_offset = len(pdf)
+    pdf.extend(f"xref\n0 {len(offsets)}\n".encode("ascii"))
+    pdf.extend(b"0000000000 65535 f \n")
+    for offset in offsets[1:]:
+        pdf.extend(f"{offset:010d} 00000 n \n".encode("ascii"))
+    pdf.extend(f"trailer\n<< /Root 1 0 R /Size {len(offsets)} >>\nstartxref\n{xref_offset}\n%%EOF\n".encode("ascii"))
+    return bytes(pdf)
+
+
+def build_xls(rows: list[list[str]]) -> bytes:
+    workbook = xlwt.Workbook()
+    sheet = workbook.add_sheet("资料")
+    for row_index, row in enumerate(rows):
+        for column_index, value in enumerate(row):
+            sheet.write(row_index, column_index, value)
+    buffer = BytesIO()
+    workbook.save(buffer)
+    return buffer.getvalue()
+
+
+def build_tiff() -> bytes:
+    image = Image.new("RGB", (24, 18), color=(120, 80, 40))
+    buffer = BytesIO()
+    image.save(buffer, format="TIFF")
+    return buffer.getvalue()
+
+
+def build_png() -> bytes:
+    image = Image.new("RGB", (18, 18), color=(40, 120, 180))
+    buffer = BytesIO()
+    image.save(buffer, format="PNG")
     return buffer.getvalue()
 
 
@@ -66,11 +120,55 @@ def test_index_page_loads_console():
     assert "审批报告" in response.text
     assert "数字孪生" in response.text
     assert "项目资料" in response.text
-    assert "项目资料模糊查询" in response.text
+    assert 'data-view="artifact-entry-view"' in response.text
+    assert 'showView(\'artifact-entry-view\')' in response.text
+    assert 'data-view="artifact-query-view"' in response.text
+    assert 'showView(\'artifact-query-view\')' in response.text
+    assert "资料录入" in response.text
+    assert "资料查询" in response.text
+    assert "录入项目模糊查询" in response.text
     assert "artifactProjectSearch" in response.text
     assert "renderArtifactProjectOptions" in response.text
     assert "syncArtifactProject" in response.text
     assert "artifactProjectInfo" in response.text
+    assert "artifactEntryRecords" in response.text
+    assert "closest(\".card\")" in response.text
+    assert "setArtifactProjectValue" in response.text
+    assert "getLinkedArtifactProjectId" in response.text
+    assert "syncArtifactProjectSelection" in response.text
+    assert "artifactQueryKeyword" in response.text
+    assert "artifactQueryTree" in response.text
+    assert "artifactQueryResults" in response.text
+    assert "artifactTypeTabs" in response.text
+    assert "artifactQueryStats" in response.text
+    assert "artifactQueryActiveFilter" in response.text
+    assert "artifactViewMode" in response.text
+    assert "setArtifactViewMode" in response.text
+    assert "artifactEntryPanel" in response.text
+    assert "artifactQueryPanel" in response.text
+    assert "renderArtifactQuery" in response.text
+    assert "renderArtifactQueryTree" in response.text
+    assert "renderArtifactQueryResults" in response.text
+    assert "setArtifactQuerySelection" in response.text
+    assert "updateQuery: false" in response.text
+    assert "artifactTypePriority" in response.text
+    assert "全部文件" in response.text
+    assert "树状结构按项目展开" in response.text
+    assert "当前分类下暂无文件" in response.text
+    assert "左侧选择项目后，右侧会显示分类标签和文件列表" in response.text
+    assert "智能模糊查询框" in response.text
+    assert "实时过滤项目名称、文件名称和文件类型" in response.text
+    assert "文件分类标签" in response.text
+    assert "文件列表区" in response.text
+    assert "artifact-project-item" in response.text
+    assert "artifact-file-card" in response.text
+    assert "artifact-file-icon" in response.text
+    assert "artifact-file-actions" in response.text
+    assert "artifactTypeTabs" in response.text
+    assert "artifactFileIcon" in response.text
+    assert "downloadArtifactFile" in response.text
+    assert "在线预览" in response.text
+    assert "下载" in response.text
     assert "industrial-v1-last-artifact-project" in response.text
     assert "资料内容" in response.text
     assert '<option value="site_feedback" selected>现场反馈</option>' in response.text
@@ -83,6 +181,7 @@ def test_index_page_loads_console():
     assert "renderArtifactFileSummary" in response.text
     assert "附件清单" in response.text
     assert "附件清单与正文" in response.text
+    assert "isExcelFile" in response.text
     assert "isReadableTextFile" in response.text
     assert "isDocxFile" in response.text
     assert "artifactParseHint" in response.text
@@ -90,8 +189,11 @@ def test_index_page_loads_console():
     assert "uploadArtifactFile" in response.text
     assert "FormData" in response.text
     assert "/artifacts/upload" in response.text
-    assert ".docx 和文本类附件会自动读取正文" in response.text
+    assert ".docx、.xls、.xlsx、PDF 和文本类附件会自动读取正文" in response.text
     assert "将解析 Word 正文" in response.text
+    assert "将解析 PDF 文本" in response.text
+    assert "将解析 Excel 表格" in response.text
+    assert "将提取图片元信息" in response.text
     assert "仅记录附件信息" in response.text
     assert "确认上传" in response.text
     assert "批量上传文档" in response.text
@@ -108,7 +210,7 @@ def test_index_page_loads_console():
     assert "条目标题" in response.text
     assert "artifactProjectLocked" in response.text
     assert "renderArtifactUploadLock" in response.text
-    assert "下面的资料上传内容为灰色且不可执行" in response.text
+    assert "下面的资料录入内容为灰色且不可执行" in response.text
     assert "AI 问答" in response.text
     assert "系统只从当前项目资料里的文件和文字内容中查找答案" in response.text
     assert "例如：东华项目出现过什么问题？" in response.text
@@ -121,6 +223,9 @@ def test_index_page_loads_console():
     assert "AI 问答失败" in response.text
     assert "renderAiError" in response.text
     assert "execution_ids: []" in response.text
+    assert "<summary>调试信息</summary>" in response.text
+    assert '<pre id="log">等待操作...</pre>' in response.text
+    assert '<pre id="log">等待操作...</pre></main>' not in response.text
     assert "权限分配" in response.text
     assert "项目录入 - 单点录入" in response.text
     assert "项目录入 - 批量录入" in response.text
@@ -281,6 +386,7 @@ def test_permission_assignment_updates_role_permissions():
     response = client.get("/api/permissions", headers={"X-Role": "admin"})
     assert response.status_code == 200
     assert "execution:run" in {item["code"] for item in response.json()["permissions"]}
+    assert response.json()["self_check"] == {"ok": True, "missing_definitions": [], "unused_definitions": []}
 
     updated = client.put(
         "/api/permissions/roles/readonly",
@@ -477,6 +583,13 @@ def test_approval_and_official_report_flow():
     submitted = client.post(f"/api/executions/{execution.id}/approval", headers={"X-Role": "engineer"})
     assert submitted.status_code == 200
     approval_id = submitted.json()["id"]
+    db = SessionLocal()
+    submit_log = db.query(models.ApprovalLog).filter_by(approval_request_id=approval_id, action="submit").one()
+    approval = db.get(models.ApprovalRequest, approval_id)
+    db.close()
+    assert approval.status == "SUBMITTED"
+    assert submit_log.from_status == "DRAFT"
+    assert submit_log.to_status == "SUBMITTED"
 
     approved = client.post(f"/api/approvals/{approval_id}/approve", headers={"X-Role": "reviewer"})
     assert approved.status_code == 200
@@ -610,8 +723,8 @@ def test_artifacts_and_ai_joint_analysis_use_mock_without_api_config():
     saved_analysis = db.query(models.AiAnalysis).order_by(models.AiAnalysis.id.desc()).first()
     request_json = json.loads(saved_analysis.request_json)
     db.close()
-    assert request_json["retrieved_chunks"]
-    assert "装出钢机现场安装空间" in request_json["retrieved_chunks"][0]["content"]
+    assert request_json["retrieved_artifacts"]
+    assert "装出钢机现场安装空间" in request_json["retrieved_artifacts"][0]["content"]
     assert "content" not in request_json["artifacts"][0]
 
     project_wide_analysis = client.post(
@@ -627,6 +740,39 @@ def test_artifacts_and_ai_joint_analysis_use_mock_without_api_config():
     )
     assert project_wide_analysis.status_code == 200
     assert "装出钢机现场安装空间与计算假设需要联合复核" in project_wide_analysis.json()["result"]["answer"]
+
+
+def test_ai_analysis_accepts_pasted_images():
+    init_db()
+    client.post("/api/seed")
+    project_id = client.get("/api/projects").json()[0]["id"]
+    png_bytes = build_png()
+    data_url = f"data:image/png;base64,{base64.b64encode(png_bytes).decode('ascii')}"
+
+    response = client.post(
+        f"/api/projects/{project_id}/ai-analyses",
+        headers={"X-Role": "engineer"},
+        json={
+            "project_item_id": None,
+            "equipment_name": "项目资料",
+            "execution_ids": [],
+            "artifact_ids": [],
+            "question": "请结合这张图片说明问题。",
+            "pasted_images": [
+                {"name": "clipboard.png", "content_type": "image/png", "data_url": data_url}
+            ],
+        },
+    )
+    assert response.status_code == 200
+
+    db = SessionLocal()
+    saved_analysis = db.query(models.AiAnalysis).order_by(models.AiAnalysis.id.desc()).first()
+    request_json = json.loads(saved_analysis.request_json)
+    db.close()
+    assert request_json["original_question"] == "请结合这张图片说明问题。"
+    assert request_json["pasted_images"][0]["name"] == "clipboard.png"
+    assert request_json["pasted_images"][0]["parse_status"] == "已提取图片元信息"
+    assert "图片格式: PNG" in request_json["question"]
 
 
 def test_project_artifacts_batch_create_all_supported_types():
@@ -690,8 +836,199 @@ def test_upload_docx_artifact_extracts_text_content():
     db = SessionLocal()
     chunks = db.query(models.ProjectArtifactChunk).filter_by(artifact_id=response.json()["id"]).all()
     db.close()
-    assert chunks
-    assert "土耳其项目反馈：炉门密封不严" in chunks[0].content
+    assert not chunks
+
+
+def test_upload_pdf_artifact_extracts_copyable_text():
+    init_db()
+    client.post("/api/seed")
+    project_id = client.get("/api/projects").json()[0]["id"]
+
+    response = client.post(
+        f"/api/projects/{project_id}/artifacts/upload",
+        headers={"X-Role": "engineer"},
+        data={"artifact_type": "technical_description", "title": "PDF 技术说明", "source_code": "PDF-001", "content": "上传日期: 2026-06-11"},
+        files={"file": ("manual.pdf", build_pdf("PDF copyable furnace text"), "application/pdf")},
+    )
+    assert response.status_code == 200
+    assert response.json()["parse_status"] == "已解析 PDF 文本"
+
+    artifacts = client.get(f"/api/projects/{project_id}/artifacts").json()
+    assert "PDF copyable furnace text" in artifacts[0]["content_preview"]
+    db = SessionLocal()
+    chunks = db.query(models.ProjectArtifactChunk).filter_by(artifact_id=response.json()["id"]).all()
+    db.close()
+    assert not chunks
+    stored = PROJECT_ROOT / "uploaded_artifacts" / str(project_id) / str(response.json()["id"]) / "manual.pdf"
+    assert stored.exists()
+    file_response = client.get(f"/api/artifacts/{response.json()['id']}/file")
+    assert file_response.status_code == 200
+    assert "application/pdf" in file_response.headers["content-type"]
+
+
+def test_reparse_stored_files_updates_pdf_content_without_chunks():
+    init_db()
+    client.post("/api/seed")
+    project_id = client.get("/api/projects").json()[0]["id"]
+    db = SessionLocal()
+    artifact = models.ProjectArtifact(
+        project_id=project_id,
+        artifact_type="technical_description",
+        title="历史 PDF 技术说明",
+        source_code="PDF-OLD",
+        content="上传日期: 2026-06-11\n\n附件清单与正文:\n- old_manual.pdf | application/pdf | 0.01 MB\n  说明: 当前版本仅支持自动解析 .docx 和文本类附件正文",
+        status="ACTIVE",
+    )
+    db.add(artifact)
+    db.flush()
+    stored = PROJECT_ROOT / "uploaded_artifacts" / str(project_id) / str(artifact.id)
+    stored.mkdir(parents=True, exist_ok=True)
+    (stored / "old_manual.pdf").write_bytes(build_pdf("stored old PDF searchable text"))
+    db.commit()
+    artifact_id = artifact.id
+    db.close()
+
+    response = client.post("/api/artifacts/reparse-stored-files", headers={"X-Role": "engineer"})
+    assert response.status_code == 200
+    assert response.json()["parsed_count"] >= 1
+    assert any(item["id"] == artifact_id for item in response.json()["parsed"])
+    assert any(item["parse_status"] == "已解析 PDF 文本" for item in response.json()["parsed"] if item["id"] == artifact_id)
+
+    db = SessionLocal()
+    reparsed = db.get(models.ProjectArtifact, artifact_id)
+    chunks = db.query(models.ProjectArtifactChunk).filter_by(artifact_id=artifact_id).all()
+    db.close()
+    assert "stored old PDF searchable text" in reparsed.content
+    assert not chunks
+
+
+def test_reparse_stored_files_updates_xls_content_without_chunks():
+    init_db()
+    client.post("/api/seed")
+    project_id = client.get("/api/projects").json()[0]["id"]
+    db = SessionLocal()
+    artifact = models.ProjectArtifact(
+        project_id=project_id,
+        artifact_type="material_list",
+        title="历史材料表",
+        source_code="XLS-OLD",
+        content="上传日期: 2026-06-11\n\n附件清单与正文:\n- old_material.xls | application/vnd.ms-excel | 0.01 MB\n  说明: 当前版本支持自动解析 .docx、.xls、.xlsx、PDF 和文本类附件正文，也会提取图片元信息",
+        status="ACTIVE",
+    )
+    db.add(artifact)
+    db.flush()
+    stored = PROJECT_ROOT / "uploaded_artifacts" / str(project_id) / str(artifact.id)
+    stored.mkdir(parents=True, exist_ok=True)
+    (stored / "old_material.xls").write_bytes(build_xls([["材料名称", "数量"], ["炉壳钢板", "12"]]))
+    db.commit()
+    artifact_id = artifact.id
+    db.close()
+
+    response = client.post("/api/artifacts/reparse-stored-files", headers={"X-Role": "engineer"})
+    assert response.status_code == 200
+    assert any(item["id"] == artifact_id for item in response.json()["parsed"])
+    assert any(item["parse_status"] == "已解析 Excel 表格" for item in response.json()["parsed"] if item["id"] == artifact_id)
+
+    db = SessionLocal()
+    reparsed = db.get(models.ProjectArtifact, artifact_id)
+    chunks = db.query(models.ProjectArtifactChunk).filter_by(artifact_id=artifact_id).all()
+    db.close()
+    assert "工作表: 资料" in reparsed.content
+    assert "炉壳钢板" in reparsed.content
+    assert not chunks
+
+
+def test_upload_same_filename_replaces_previous_artifact_without_chunks():
+    init_db()
+    client.post("/api/seed")
+    project_id = client.get("/api/projects").json()[0]["id"]
+
+    first = client.post(
+        f"/api/projects/{project_id}/artifacts/upload",
+        headers={"X-Role": "engineer"},
+        data={"artifact_type": "technical_description", "title": "同名 PDF 旧版", "source_code": "PDF-001", "content": "上传日期: 2026-06-11"},
+        files={"file": ("same.pdf", build_pdf("old searchable text"), "application/pdf")},
+    )
+    second = client.post(
+        f"/api/projects/{project_id}/artifacts/upload",
+        headers={"X-Role": "engineer"},
+        data={"artifact_type": "technical_description", "title": "同名 PDF 新版", "source_code": "PDF-002", "content": "上传日期: 2026-06-11"},
+        files={"file": ("same.pdf", build_pdf("new searchable text"), "application/pdf")},
+    )
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json()["replaced_count"] == 1
+
+    artifacts = client.get(f"/api/projects/{project_id}/artifacts").json()
+    assert [artifact["title"] for artifact in artifacts if artifact["title"].startswith("同名 PDF")] == ["同名 PDF 新版"]
+    db = SessionLocal()
+    old_artifact = db.get(models.ProjectArtifact, first.json()["id"])
+    old_chunks = db.query(models.ProjectArtifactChunk).filter_by(artifact_id=first.json()["id"]).all()
+    new_chunks = db.query(models.ProjectArtifactChunk).filter_by(artifact_id=second.json()["id"]).all()
+    db.close()
+    assert old_artifact.status == "DELETED"
+    assert not old_chunks
+    assert not new_chunks
+
+
+def test_upload_tiff_artifact_extracts_image_metadata():
+    init_db()
+    client.post("/api/seed")
+    project_id = client.get("/api/projects").json()[0]["id"]
+
+    response = client.post(
+        f"/api/projects/{project_id}/artifacts/upload",
+        headers={"X-Role": "engineer"},
+        data={"artifact_type": "site_feedback", "title": "现场照片", "source_code": "IMG-001", "content": "上传日期: 2026-06-11"},
+        files={"file": ("furnace.tif", build_tiff(), "image/tiff")},
+    )
+    assert response.status_code == 200
+    assert response.json()["parse_status"] == "已提取图片元信息"
+
+    artifacts = client.get(f"/api/projects/{project_id}/artifacts").json()
+    assert "furnace.tif" in artifacts[0]["content_preview"]
+    assert "图片格式: TIFF" in artifacts[0]["content_preview"]
+    assert "尺寸: 24 x 18" in artifacts[0]["content_preview"]
+
+
+def test_upload_xls_artifact_extracts_sheet_text():
+    init_db()
+    client.post("/api/seed")
+    project_id = client.get("/api/projects").json()[0]["id"]
+
+    response = client.post(
+        f"/api/projects/{project_id}/artifacts/upload",
+        headers={"X-Role": "engineer"},
+        data={"artifact_type": "material_list", "title": "材料表", "source_code": "XLS-001", "content": "上传日期: 2026-06-11"},
+        files={"file": ("materials.xls", build_xls([["名称", "数量"], ["燃烧器", "8"], ["风机", "2"]]), "application/vnd.ms-excel")},
+    )
+    assert response.status_code == 200
+    assert response.json()["parse_status"] == "已解析 Excel 表格"
+
+    artifacts = client.get(f"/api/projects/{project_id}/artifacts").json()
+    assert "工作表: 资料" in artifacts[0]["content_preview"]
+    assert "燃烧器 | 8" in artifacts[0]["content_preview"]
+
+
+def test_artifact_query_returns_file_metadata():
+    init_db()
+    client.post("/api/seed")
+    project_id = client.get("/api/projects").json()[0]["id"]
+
+    response = client.post(
+        f"/api/projects/{project_id}/artifacts/upload",
+        headers={"X-Role": "engineer"},
+        data={"artifact_type": "technical_description", "title": "文件元数据", "source_code": "PDF-META", "content": "上传日期: 2026-06-15"},
+        files={"file": ("meta.pdf", build_pdf("metadata text"), "application/pdf")},
+    )
+    assert response.status_code == 200
+
+    rows = client.get("/api/artifacts/query").json()
+    target = next(row for row in rows if row["id"] == response.json()["id"])
+    assert target["file_name"] == "meta.pdf"
+    assert target["file_content_type"] == "application/pdf"
+    assert target["has_file"] is True
+    assert target["view_url"] == f"/api/artifacts/{response.json()['id']}/file"
 
 
 def test_artifact_rejects_project_item_from_another_project():

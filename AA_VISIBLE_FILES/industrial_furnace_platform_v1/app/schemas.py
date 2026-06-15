@@ -148,6 +148,12 @@ class ArtifactBatchCreate(BaseModel):
     items: list[ArtifactCreate]
 
 
+class ClipboardImageInput(BaseModel):
+    name: str
+    content_type: str
+    data_url: str
+
+
 class AiAnalysisRequest(BaseModel):
     project_item_id: int | None = None
     equipment_name: str
@@ -155,3 +161,4 @@ class AiAnalysisRequest(BaseModel):
     execution_ids: list[int] = Field(default_factory=list)
     artifact_ids: list[int] = Field(default_factory=list)
     question: str = "请根据项目资料回答我的问题。"
+    pasted_images: list[ClipboardImageInput] = Field(default_factory=list)

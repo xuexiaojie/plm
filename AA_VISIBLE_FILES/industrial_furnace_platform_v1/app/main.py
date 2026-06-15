@@ -1,6 +1,6 @@
+import base64
+import mimetypes
 import json
-import hashlib
-import math
 import re
 import zipfile
 from contextlib import asynccontextmanager
@@ -12,9 +12,13 @@ from uuid import uuid4
 from xml.etree import ElementTree
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
+from openpyxl import load_workbook
+from PIL import Image, UnidentifiedImageError
+from pypdf import PdfReader
 from sqlalchemy.orm import Session
+import xlrd
 
 from app import models
 from app.ai_client import run_joint_analysis
@@ -24,6 +28,7 @@ from app.schemas import (
     AiAnalysisRequest,
     ArtifactBatchCreate,
     ArtifactCreate,
+    ClipboardImageInput,
     ExecutionRequest,
     ExecutorResponse,
     PermissionAssignment,
@@ -37,6 +42,7 @@ from app.seed import seed_all
 
 
 BASE_DIR = Path(__file__).resolve().parent
+UPLOAD_DIR = BASE_DIR.parent / "uploaded_artifacts"
 
 
 @asynccontextmanager
@@ -44,7 +50,7 @@ async def lifespan(app: FastAPI):
     init_db()
     db = SessionLocal()
     try:
-        _ensure_artifact_chunks(db)
+        _clear_legacy_artifact_retrieval_state(db)
     finally:
         db.close()
     yield
@@ -98,17 +104,16 @@ ARTIFACT_TYPES = {
 PROJECT_MANAGER_CANDIDATES = ["张工", "李工", "王工", "赵工"]
 ENTERPRISE_CANDIDATES = ["宝山钢铁股份有限公司", "鞍钢集团工程技术有限公司", "首钢集团有限公司", "河钢集团有限公司"]
 TEXT_FILE_SUFFIXES = {".txt", ".md", ".csv", ".json", ".html", ".xml", ".yaml", ".yml", ".log"}
-EMBEDDING_DIMENSIONS = 96
-CHUNK_SIZE = 900
-CHUNK_OVERLAP = 120
+EXCEL_FILE_SUFFIXES = {".xls", ".xlsx"}
+IMAGE_FILE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff"}
 
 
 @app.get("/", response_class=HTMLResponse)
 def index() -> str:
     with open(BASE_DIR / "static" / "index.html", encoding="utf-8") as page:
         html = page.read().replace("AI 联合分析", "AI 问答")
-        html = html.replace('id="artifactFileSummary" class="meta">可一次选择多个文档、图片或视频。', 'id="artifactFileSummary" class="meta">可一次选择多个文档、图片或视频。.docx 和文本类附件会自动读取正文。')
-        html = html.replace('id="artifactBatchDocSummary" class="meta">只支持文档文件，每个文档将生成一个资料条目。', 'id="artifactBatchDocSummary" class="meta">只支持文档文件，每个文档将生成一个资料条目。.docx 和文本类附件会自动读取正文。')
+        html = html.replace('id="artifactFileSummary" class="meta">可一次选择多个文档、图片或视频。', 'id="artifactFileSummary" class="meta">可一次选择多个文档、图片或视频。.docx、.xls、.xlsx、PDF 和文本类附件会自动读取正文，图片会提取元信息。')
+        html = html.replace('id="artifactBatchDocSummary" class="meta">只支持文档文件，每个文档将生成一个资料条目。', 'id="artifactBatchDocSummary" class="meta">只支持文档文件，每个文档将生成一个资料条目。.docx、.xls、.xlsx、PDF 和文本类附件会自动读取正文。')
         return html
 
 
@@ -127,6 +132,10 @@ def permission_dependency(permission: str):
 
 
 def _permission_snapshot() -> dict:
+    catalog_codes = {item["code"] for item in PERMISSION_CATALOG}
+    role_codes = sorted({permission for permissions in ROLE_PERMISSIONS.values() for permission in permissions if permission != "*"})
+    missing_definitions = [permission for permission in role_codes if permission not in catalog_codes]
+    unused_definitions = sorted(catalog_codes - set(role_codes))
     return {
         "permissions": PERMISSION_CATALOG,
         "roles": [
@@ -138,6 +147,11 @@ def _permission_snapshot() -> dict:
             }
             for role, permissions in ROLE_PERMISSIONS.items()
         ],
+        "self_check": {
+            "ok": not missing_definitions,
+            "missing_definitions": missing_definitions,
+            "unused_definitions": unused_definitions,
+        },
     }
 
 
@@ -166,10 +180,76 @@ def _extract_docx_text(content: bytes) -> str:
     return "\n".join(paragraphs)
 
 
+def _extract_pdf_text(content: bytes) -> str:
+    try:
+        reader = PdfReader(BytesIO(content))
+        pages = [page.extract_text() or "" for page in reader.pages]
+    except Exception as error:
+        raise HTTPException(status_code=400, detail={"code": "PARAM_INVALID", "message": "PDF 文档解析失败，请确认文件为有效 PDF 格式"}) from error
+    return "\n".join(page.strip() for page in pages if page.strip())
+
+
+def _extract_xlsx_text(content: bytes) -> str:
+    try:
+        workbook = load_workbook(BytesIO(content), data_only=True)
+    except Exception as error:
+        raise HTTPException(status_code=400, detail={"code": "PARAM_INVALID", "message": "Excel 文档解析失败，请确认文件为有效 .xlsx 格式"}) from error
+    rows = []
+    for sheet in workbook.worksheets:
+        rows.append(f"工作表: {sheet.title}")
+        for values in sheet.iter_rows(values_only=True):
+            cells = [str(value).strip() for value in values if value is not None and str(value).strip()]
+            if cells:
+                rows.append(" | ".join(cells))
+    return "\n".join(rows)
+
+
+def _extract_xls_text(content: bytes) -> str:
+    try:
+        workbook = xlrd.open_workbook(file_contents=content)
+    except Exception as error:
+        raise HTTPException(status_code=400, detail={"code": "PARAM_INVALID", "message": "Excel 文档解析失败，请确认文件为有效 .xls 格式"}) from error
+    rows = []
+    for sheet in workbook.sheets():
+        rows.append(f"工作表: {sheet.name}")
+        for row_index in range(sheet.nrows):
+            cells = [str(sheet.cell_value(row_index, column_index)).strip() for column_index in range(sheet.ncols)]
+            cells = [cell for cell in cells if cell]
+            if cells:
+                rows.append(" | ".join(cells))
+    return "\n".join(rows)
+
+
+def _extract_image_summary(filename: str, content: bytes) -> str:
+    try:
+        with Image.open(BytesIO(content)) as image:
+            width, height = image.size
+            return "\n".join(
+                [
+                    f"文件名: {filename}",
+                    f"图片格式: {image.format or '未知'}",
+                    f"尺寸: {width} x {height}",
+                    f"颜色模式: {image.mode or '未知'}",
+                    f"帧数: {getattr(image, 'n_frames', 1)}",
+                ]
+            )
+    except UnidentifiedImageError as error:
+        raise HTTPException(status_code=400, detail={"code": "PARAM_INVALID", "message": "图片解析失败，请确认文件为有效图片格式"}) from error
+
+
 def _decode_uploaded_text(filename: str, content_type: str | None, content: bytes) -> tuple[str, str]:
     suffix = Path(filename).suffix.lower()
     if suffix == ".docx":
         return "已解析 Word 正文", _extract_docx_text(content)
+    if suffix == ".pdf" or content_type == "application/pdf":
+        text = _extract_pdf_text(content)
+        return ("已解析 PDF 文本" if text.strip() else "PDF 未提取到可复制文本", text)
+    if suffix == ".xlsx":
+        text = _extract_xlsx_text(content)
+        return ("已解析 Excel 表格" if text.strip() else "Excel 未提取到单元格内容", text)
+    if suffix == ".xls":
+        text = _extract_xls_text(content)
+        return ("已解析 Excel 表格" if text.strip() else "Excel 未提取到单元格内容", text)
     if (content_type or "").startswith("text/") or suffix in TEXT_FILE_SUFFIXES:
         for encoding in ("utf-8", "gb18030"):
             try:
@@ -177,11 +257,161 @@ def _decode_uploaded_text(filename: str, content_type: str | None, content: byte
             except UnicodeDecodeError:
                 continue
         return "文本附件解码失败", ""
-    return "当前版本仅支持自动解析 .docx 和文本类附件正文", ""
+    if (content_type or "").startswith("image/") or suffix in IMAGE_FILE_SUFFIXES:
+        return "已提取图片元信息", _extract_image_summary(filename, content)
+    return "当前版本支持自动解析 .docx、.xls、.xlsx、PDF 和文本类附件正文，也会提取图片元信息", ""
+
+
+def _safe_upload_filename(filename: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_.\-\u4e00-\u9fff]+", "_", filename).strip("._")
+    return safe or "unnamed"
+
+
+def _save_uploaded_file(project_id: int, artifact_id: int, filename: str, content: bytes) -> Path:
+    directory = UPLOAD_DIR / str(project_id) / str(artifact_id)
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / _safe_upload_filename(filename)
+    path.write_bytes(content)
+    return path
+
+
+def _extract_uploaded_filename(content: str) -> str | None:
+    match = re.search(r"^- (.+?) \| .+? \|", content, flags=re.MULTILINE)
+    return match.group(1).strip() if match else None
+
+
+def _extract_uploaded_prefix(content: str) -> str:
+    marker = "\n\n附件清单与正文:"
+    prefix, _, _ = content.partition(marker)
+    return prefix.strip()
+
+
+def _extract_uploaded_content_type(content: str, filename: str) -> str:
+    match = re.search(r"^- .+? \| (.+?) \|", content, flags=re.MULTILINE)
+    if match and match.group(1).strip():
+        return match.group(1).strip()
+    guessed, _ = mimetypes.guess_type(filename)
+    return guessed or "application/octet-stream"
+
+
+def _build_artifact_content(prefix: str, filename: str, content_type: str, raw: bytes, status: str, text: str) -> str:
+    file_summary = [
+        "附件清单与正文:",
+        f"- {filename} | {content_type or '未知类型'} | {len(raw) / 1024 / 1024:.2f} MB",
+        f"  说明: {status}",
+    ]
+    if text.strip():
+        file_summary.extend(["  正文:", text[:50000]])
+    return "\n".join([prefix, "", *file_summary]).strip()
+
+
+def _decode_data_url_bytes(data_url: str) -> bytes:
+    match = re.match(r"^data:.*?;base64,(.+)$", data_url, flags=re.DOTALL)
+    if not match:
+        raise HTTPException(status_code=400, detail={"code": "PARAM_INVALID", "message": "粘贴图片数据格式不正确"})
+    try:
+        return base64.b64decode(match.group(1))
+    except Exception as error:
+        raise HTTPException(status_code=400, detail={"code": "PARAM_INVALID", "message": "粘贴图片数据解码失败"}) from error
+
+
+def _build_pasted_image_context(images: list[ClipboardImageInput]) -> list[dict]:
+    rows = []
+    for image in images:
+        raw = _decode_data_url_bytes(image.data_url)
+        status, text = _decode_uploaded_text(image.name, image.content_type, raw)
+        rows.append(
+            {
+                "name": image.name,
+                "content_type": image.content_type,
+                "parse_status": status,
+                "summary": text[:50000],
+            }
+        )
+    return rows
+
+
+def _soft_delete_artifact(db: Session, artifact: models.ProjectArtifact) -> None:
+    artifact.status = "DELETED"
+    artifact.deleted_at = datetime.utcnow()
+    _clear_artifact_chunks(db, artifact_id=artifact.id)
+
+
+def _soft_delete_matching_uploads(db: Session, project_id: int, artifact_id: int, filename: str) -> int:
+    deleted = 0
+    for artifact in db.query(models.ProjectArtifact).filter_by(project_id=project_id, status="ACTIVE").all():
+        if artifact.id == artifact_id:
+            continue
+        if _extract_uploaded_filename(artifact.content) == filename:
+            _soft_delete_artifact(db, artifact)
+            deleted += 1
+    return deleted
+
+
+def _find_stored_upload(project_id: int, artifact_id: int, filename: str) -> Path | None:
+    path = UPLOAD_DIR / str(project_id) / str(artifact_id) / _safe_upload_filename(filename)
+    if path.exists():
+        return path
+    matches = list(UPLOAD_DIR.glob(f"**/{_safe_upload_filename(filename)}"))
+    return matches[0] if matches else None
+
+
+def _reparse_stored_artifacts(db: Session) -> dict:
+    parsed = []
+    missing_files = []
+    skipped = []
+    artifacts = db.query(models.ProjectArtifact).filter_by(status="ACTIVE").all()
+    for artifact in artifacts:
+        filename = _extract_uploaded_filename(artifact.content)
+        if not filename:
+            skipped.append({"id": artifact.id, "title": artifact.title, "reason": "未找到已上传文件名"})
+            continue
+        path = _find_stored_upload(artifact.project_id, artifact.id, filename)
+        if path is None:
+            missing_files.append({"id": artifact.id, "title": artifact.title, "filename": filename})
+            continue
+        raw = path.read_bytes()
+        content_type = _extract_uploaded_content_type(artifact.content, filename)
+        status, text = _decode_uploaded_text(filename, content_type, raw)
+        prefix = _extract_uploaded_prefix(artifact.content)
+        artifact.content = _build_artifact_content(prefix, filename, content_type, raw, status, text)
+        _clear_artifact_chunks(db, artifact_id=artifact.id)
+        parsed.append({"id": artifact.id, "title": artifact.title, "filename": filename, "parse_status": status, "text_length": len(text)})
+    if parsed:
+        db.commit()
+    return {"parsed_count": len(parsed), "missing_count": len(missing_files), "skipped_count": len(skipped), "parsed": parsed, "missing_files": missing_files, "skipped": skipped}
 
 
 def _artifact_response(artifact: models.ProjectArtifact) -> dict:
     return {"id": artifact.id, "artifact_type": artifact.artifact_type, "type_name": ARTIFACT_TYPES[artifact.artifact_type], "title": artifact.title}
+
+
+def _artifact_file_payload(artifact: models.ProjectArtifact) -> dict:
+    filename = _extract_uploaded_filename(artifact.content)
+    if not filename:
+        return {"file_name": None, "file_content_type": None, "has_file": False, "view_url": None}
+    path = _find_stored_upload(artifact.project_id, artifact.id, filename)
+    content_type = _extract_uploaded_content_type(artifact.content, filename)
+    return {
+        "file_name": filename,
+        "file_content_type": content_type,
+        "has_file": path is not None,
+        "view_url": f"/api/artifacts/{artifact.id}/file" if path is not None else None,
+    }
+
+
+def _artifact_list_payload(artifact: models.ProjectArtifact) -> dict:
+    return {
+        "id": artifact.id,
+        "project_item_id": artifact.project_item_id,
+        "artifact_type": artifact.artifact_type,
+        "type_name": ARTIFACT_TYPES.get(artifact.artifact_type, artifact.artifact_type),
+        "title": artifact.title,
+        "source_code": artifact.source_code,
+        "content_preview": _content_preview(artifact.content),
+        "content_length": len(artifact.content),
+        **_artifact_file_payload(artifact),
+    }
 
 
 def _content_preview(content: str, limit: int = 240) -> str:
@@ -191,90 +421,90 @@ def _content_preview(content: str, limit: int = 240) -> str:
     return compact[:limit].rstrip() + "..."
 
 
-def _chunk_text(text: str, size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> list[str]:
-    compact = re.sub(r"\n{3,}", "\n\n", text.strip())
+def _clear_artifact_chunks(db: Session, artifact_id: int | None = None) -> int:
+    query = db.query(models.ProjectArtifactChunk)
+    if artifact_id is not None:
+        query = query.filter_by(artifact_id=artifact_id)
+    return query.delete()
+
+
+def _clear_legacy_artifact_retrieval_state(db: Session) -> None:
+    removed_chunks = db.query(models.ProjectArtifactChunk).delete()
+    removed_analyses = db.query(models.AiAnalysis).filter(models.AiAnalysis.request_json.contains("retrieved_chunks")).delete()
+    if removed_chunks or removed_analyses:
+        db.commit()
+
+
+def _tokenize_search_terms(text: str) -> list[str]:
+    return [token for token in re.findall(r"[A-Za-z0-9_]+|[\u4e00-\u9fff]{2,}", (text or "").lower()) if token.strip()]
+
+
+def _artifact_search_text(artifact: models.ProjectArtifact) -> str:
+    return "\n".join([artifact.title or "", artifact.source_code or "", artifact.content or ""]).lower()
+
+
+def _artifact_excerpt(text: str, keywords: list[str], limit: int = 260) -> str:
+    compact = re.sub(r"\s+", " ", text or "").strip()
     if not compact:
-        return []
-    chunks = []
-    start = 0
-    while start < len(compact):
-        end = min(len(compact), start + size)
-        chunks.append(compact[start:end])
-        if end == len(compact):
+        return ""
+    anchor = 0
+    for keyword in keywords:
+        index = compact.lower().find(keyword)
+        if index >= 0:
+            anchor = max(0, index - 40)
             break
-        start = max(end - overlap, start + 1)
-    return chunks
+    snippet = compact[anchor:anchor + limit]
+    return snippet if len(compact) <= anchor + limit else snippet.rstrip() + "..."
 
 
-def _tokenize_for_embedding(text: str) -> list[str]:
-    words = re.findall(r"[A-Za-z0-9_]+|[\u4e00-\u9fff]", text.lower())
-    return [word for word in words if word.strip()]
-
-
-def _embed_text(text: str) -> list[float]:
-    vector = [0.0] * EMBEDDING_DIMENSIONS
-    for token in _tokenize_for_embedding(text):
-        index = int(hashlib.sha256(token.encode("utf-8")).hexdigest(), 16) % EMBEDDING_DIMENSIONS
-        vector[index] += 1.0
-    norm = math.sqrt(sum(value * value for value in vector)) or 1.0
-    return [round(value / norm, 6) for value in vector]
-
-
-def _cosine_similarity(left: list[float], right: list[float]) -> float:
-    return sum(left_value * right_value for left_value, right_value in zip(left, right))
-
-
-def _rebuild_artifact_chunks(db: Session, artifact: models.ProjectArtifact) -> None:
-    db.query(models.ProjectArtifactChunk).filter_by(artifact_id=artifact.id).delete()
-    for index, chunk in enumerate(_chunk_text(artifact.content)):
-        db.add(
-            models.ProjectArtifactChunk(
-                project_id=artifact.project_id,
-                artifact_id=artifact.id,
-                chunk_index=index,
-                content=chunk,
-                embedding_json=json.dumps(_embed_text(chunk)),
-            )
-        )
-
-
-def _search_artifact_chunks(db: Session, project_id: int, question: str, artifact_ids: list[int], limit: int = 8) -> list[dict]:
-    query = db.query(models.ProjectArtifactChunk).filter_by(project_id=project_id)
+def _search_project_artifacts(db: Session, project_id: int, question: str, artifact_ids: list[int], limit: int = 8) -> list[dict]:
+    query = db.query(models.ProjectArtifact).filter_by(project_id=project_id, status="ACTIVE")
     if artifact_ids:
-        query = query.filter(models.ProjectArtifactChunk.artifact_id.in_(artifact_ids))
-    question_embedding = _embed_text(question)
+        query = query.filter(models.ProjectArtifact.id.in_(artifact_ids))
+    keywords = _tokenize_search_terms(question)
     scored = []
-    for chunk in query.all():
-        score = _cosine_similarity(question_embedding, json.loads(chunk.embedding_json))
-        if score > 0 or not question.strip():
-            artifact = db.get(models.ProjectArtifact, chunk.artifact_id)
-            scored.append((score, chunk, artifact))
-    scored.sort(key=lambda item: item[0], reverse=True)
+    for artifact in query.all():
+        haystack = _artifact_search_text(artifact)
+        if not haystack.strip():
+            continue
+        score = 0
+        for keyword in keywords:
+            if keyword in haystack:
+                score += 3
+            if keyword in (artifact.title or "").lower():
+                score += 2
+            if keyword in (artifact.source_code or "").lower():
+                score += 1
+        if not keywords:
+            score = 1
+        if score <= 0:
+            continue
+        scored.append((score, artifact, _artifact_excerpt(artifact.content, keywords)))
+    if not scored:
+        fallback = query.order_by(models.ProjectArtifact.id.desc()).limit(limit).all()
+        return [
+            {
+                "artifact_id": artifact.id,
+                "score": 0,
+                "type": artifact.artifact_type,
+                "type_name": ARTIFACT_TYPES.get(artifact.artifact_type, artifact.artifact_type),
+                "title": artifact.title,
+                "content": _artifact_excerpt(artifact.content, []),
+            }
+            for artifact in fallback
+        ]
+    scored.sort(key=lambda item: (item[0], item[1].id), reverse=True)
     return [
         {
-            "artifact_id": chunk.artifact_id,
-            "chunk_id": chunk.id,
-            "chunk_index": chunk.chunk_index,
-            "score": round(score, 4),
-            "type": artifact.artifact_type if artifact else "project_artifact",
-            "type_name": ARTIFACT_TYPES.get(artifact.artifact_type, artifact.artifact_type) if artifact else "项目资料",
-            "title": artifact.title if artifact else "未知资料",
-            "content": chunk.content,
+            "artifact_id": artifact.id,
+            "score": score,
+            "type": artifact.artifact_type,
+            "type_name": ARTIFACT_TYPES.get(artifact.artifact_type, artifact.artifact_type),
+            "title": artifact.title,
+            "content": snippet,
         }
-        for score, chunk, artifact in scored[:limit]
+        for score, artifact, snippet in scored[:limit]
     ]
-
-
-def _ensure_artifact_chunks(db: Session) -> None:
-    artifacts = db.query(models.ProjectArtifact).filter_by(status="ACTIVE").all()
-    changed = False
-    for artifact in artifacts:
-        exists = db.query(models.ProjectArtifactChunk).filter_by(artifact_id=artifact.id).first()
-        if exists is None:
-            _rebuild_artifact_chunks(db, artifact)
-            changed = True
-    if changed:
-        db.commit()
 
 
 @app.post("/api/seed")
@@ -470,7 +700,7 @@ def create_artifact(
     artifact = models.ProjectArtifact(project_id=project_id, **payload.model_dump())
     db.add(artifact)
     db.flush()
-    _rebuild_artifact_chunks(db, artifact)
+    _clear_artifact_chunks(db, artifact_id=artifact.id)
     db.commit()
     db.refresh(artifact)
     return _artifact_response(artifact)
@@ -513,10 +743,20 @@ async def upload_artifact(
     )
     db.add(artifact)
     db.flush()
-    _rebuild_artifact_chunks(db, artifact)
+    _save_uploaded_file(project_id, artifact.id, file.filename or title, raw)
+    replaced_count = _soft_delete_matching_uploads(db, project_id, artifact.id, file.filename or title)
+    _clear_artifact_chunks(db, artifact_id=artifact.id)
     db.commit()
     db.refresh(artifact)
-    return {**_artifact_response(artifact), "parse_status": status}
+    return {**_artifact_response(artifact), "parse_status": status, "replaced_count": replaced_count}
+
+
+@app.post("/api/artifacts/reparse-stored-files")
+def reparse_stored_files(
+    db: Session = Depends(get_db),
+    role: str = Depends(permission_dependency("artifact:manage")),
+) -> dict:
+    return _reparse_stored_artifacts(db)
 
 
 @app.post("/api/projects/{project_id}/artifacts/batch")
@@ -538,7 +778,7 @@ def create_artifacts_batch(
         artifact = models.ProjectArtifact(project_id=project_id, **item.model_dump())
         db.add(artifact)
         db.flush()
-        _rebuild_artifact_chunks(db, artifact)
+        _clear_artifact_chunks(db, artifact_id=artifact.id)
         artifacts.append(artifact)
     db.commit()
     for artifact in artifacts:
@@ -558,19 +798,44 @@ def list_artifacts(project_id: int, project_item_id: int | None = None, db: Sess
     if project_item_id is not None:
         query = query.filter_by(project_item_id=project_item_id)
     artifacts = query.order_by(models.ProjectArtifact.id.desc()).all()
+    return [_artifact_list_payload(artifact) for artifact in artifacts]
+
+
+@app.get("/api/artifacts/query")
+def query_artifacts(db: Session = Depends(get_db)) -> list[dict]:
+    projects = {project.id: project for project in db.query(models.Project).all()}
+    managed_map = {project.name: _project_management_row(project) for project in projects.values()}
+    artifacts = db.query(models.ProjectArtifact).filter_by(status="ACTIVE").order_by(models.ProjectArtifact.project_id, models.ProjectArtifact.id.desc()).all()
     return [
         {
-            "id": artifact.id,
-            "project_item_id": artifact.project_item_id,
-            "artifact_type": artifact.artifact_type,
-            "type_name": ARTIFACT_TYPES.get(artifact.artifact_type, artifact.artifact_type),
-            "title": artifact.title,
-            "source_code": artifact.source_code,
-            "content_preview": _content_preview(artifact.content),
-            "content_length": len(artifact.content),
+            "project_id": artifact.project_id,
+            "project_name": projects.get(artifact.project_id).name if projects.get(artifact.project_id) else f"项目 {artifact.project_id}",
+            "project_code": projects.get(artifact.project_id).code if projects.get(artifact.project_id) else "",
+            "project_manager": managed_map.get(projects.get(artifact.project_id).name, {}).get("project_manager", "未填") if projects.get(artifact.project_id) else "未填",
+            "project_intro": managed_map.get(projects.get(artifact.project_id).name, {}).get("technical_terms") if projects.get(artifact.project_id) and managed_map.get(projects.get(artifact.project_id).name, {}).get("technical_terms") else (projects.get(artifact.project_id).description if projects.get(artifact.project_id) else ""),
+            **_artifact_list_payload(artifact),
         }
         for artifact in artifacts
     ]
+
+
+@app.get("/api/artifacts/{artifact_id}/file")
+def get_artifact_file(
+    artifact_id: int,
+    db: Session = Depends(get_db),
+    role: str = Depends(permission_dependency("read")),
+):
+    artifact = db.get(models.ProjectArtifact, artifact_id)
+    if artifact is None or artifact.status != "ACTIVE":
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "资料不存在"})
+    filename = _extract_uploaded_filename(artifact.content)
+    if not filename:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "资料未关联原始附件"})
+    path = _find_stored_upload(artifact.project_id, artifact.id, filename)
+    if path is None:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "原始附件不存在"})
+    content_type = _extract_uploaded_content_type(artifact.content, filename)
+    return FileResponse(path, media_type=content_type, filename=filename, headers={"Content-Disposition": f'inline; filename="{_safe_upload_filename(filename)}"'})
 
 
 @app.get("/api/items/{item_id}/nodes")
@@ -724,13 +989,14 @@ def submit_approval(
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "执行记录不存在"})
     approval = models.ApprovalRequest(
         execution_id=execution.id,
-        status="SUBMITTED",
+        status="DRAFT",
         submitted_by=2,
-        submitted_at=datetime.utcnow(),
         current_approver_id=3,
     )
     db.add(approval)
     db.flush()
+    approval.status = "SUBMITTED"
+    approval.submitted_at = datetime.utcnow()
     db.add(
         models.ApprovalLog(
             approval_request_id=approval.id,
@@ -934,13 +1200,24 @@ def create_ai_analysis(
                 "content_preview": _content_preview(artifact.content),
             }
         )
-    retrieved_chunks = _search_artifact_chunks(db, project_id, payload.question, selected_artifact_ids)
+    pasted_images = _build_pasted_image_context(payload.pasted_images)
+    ai_question = payload.question.strip()
+    if pasted_images:
+        image_lines = ["补充图片信息:"]
+        for index, image in enumerate(pasted_images, start=1):
+            image_lines.append(f"- 图片{index}: {image['name']} | {image['content_type']} | {image['parse_status']}")
+            if image["summary"].strip():
+                image_lines.append(image["summary"])
+        ai_question = "\n\n".join([ai_question or "请结合项目资料和粘贴图片回答问题。", "\n".join(image_lines)])
+    retrieved_artifacts = _search_project_artifacts(db, project_id, ai_question or payload.question, selected_artifact_ids)
     request_data = {
         "equipment_name": payload.equipment_name,
         "analysis_type": payload.analysis_type,
-        "question": payload.question,
+        "question": ai_question,
+        "original_question": payload.question,
+        "pasted_images": pasted_images,
         "executions": executions,
-        "retrieved_chunks": retrieved_chunks,
+        "retrieved_artifacts": retrieved_artifacts,
         "artifacts": artifacts,
     }
     prompt = json.dumps(request_data, ensure_ascii=False, indent=2)

@@ -5,3 +5,8 @@ uvicorn
 pytest
 httpx
 python-multipart
+pypdf
+openpyxl
+xlrd
+xlwt
+Pillow
