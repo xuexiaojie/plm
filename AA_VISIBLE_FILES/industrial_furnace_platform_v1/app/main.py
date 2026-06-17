@@ -1,4 +1,5 @@
 import base64
+import binascii
 import logging
 import mimetypes
 import json
@@ -165,6 +166,7 @@ ENTERPRISE_CANDIDATES = ["宝山钢铁股份有限公司", "鞍钢集团工程�
 TEXT_FILE_SUFFIXES = {".txt", ".md", ".csv", ".json", ".html", ".xml", ".yaml", ".yml", ".log"}
 EXCEL_FILE_SUFFIXES = {".xls", ".xlsx"}
 IMAGE_FILE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff"}
+PASTED_IMAGE_SUMMARY_LIMIT = 500
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -303,7 +305,11 @@ def _extract_xls_text(content: bytes) -> str:
 
 
 def _extract_image_summary(filename: str, content: bytes) -> str:
+    if len(content) < 32:
+        raise HTTPException(status_code=400, detail={"code": "PARAM_INVALID", "message": "解析失败：图片数据过短"})
     try:
+        with Image.open(BytesIO(content)) as image:
+            image.verify()
         with Image.open(BytesIO(content)) as image:
             width, height = image.size
             return "\n".join(
@@ -316,7 +322,11 @@ def _extract_image_summary(filename: str, content: bytes) -> str:
                 ]
             )
     except UnidentifiedImageError as error:
-        raise HTTPException(status_code=400, detail={"code": "PARAM_INVALID", "message": "图片解析失败，请确认文件为有效图片格式"}) from error
+        raise HTTPException(status_code=400, detail={"code": "PARAM_INVALID", "message": "解析失败：非有效图片文件"}) from error
+    except HTTPException:
+        raise
+    except Exception as error:
+        raise HTTPException(status_code=400, detail={"code": "PARAM_INVALID", "message": f"图片校验失败：{error}"}) from error
 
 
 def _decode_uploaded_text(filename: str, content_type: str | None, content: bytes) -> tuple[str, str]:
@@ -388,13 +398,22 @@ def _build_artifact_content(prefix: str, filename: str, content_type: str, raw: 
 
 
 def _decode_data_url_bytes(data_url: str) -> bytes:
-    match = re.match(r"^data:.*?;base64,(.+)$", data_url, flags=re.DOTALL)
+    clean_url = re.sub(r"\s+", "", (data_url or "").strip())
+    match = re.search(r"data:([^;,]+);base64,([^\"'<>]+)", clean_url, flags=re.IGNORECASE)
     if not match:
-        raise HTTPException(status_code=400, detail={"code": "PARAM_INVALID", "message": "粘贴图片数据格式不正确"})
+        raise HTTPException(status_code=400, detail={"code": "PARAM_INVALID", "message": "粘贴图片必须为标准 data-url 格式（image/*）"})
+    mime_type, raw_base64 = match.groups()
+    if not mime_type.lower().startswith("image/"):
+        raise HTTPException(status_code=400, detail={"code": "PARAM_INVALID", "message": "仅支持粘贴图片，不支持其他文件"})
+    normalized_base64 = raw_base64.replace("-", "+").replace("_", "/")
+    padding = (4 - len(normalized_base64) % 4) % 4
+    normalized_base64 += "=" * padding
     try:
-        return base64.b64decode(match.group(1))
+        return base64.b64decode(normalized_base64, validate=True)
+    except binascii.Error as error:
+        raise HTTPException(status_code=400, detail={"code": "PARAM_INVALID", "message": f"Base64 解码失败：{error}"}) from error
     except Exception as error:
-        raise HTTPException(status_code=400, detail={"code": "PARAM_INVALID", "message": "粘贴图片数据解码失败"}) from error
+        raise HTTPException(status_code=400, detail={"code": "PARAM_INVALID", "message": f"图片二进制解析异常：{error}"}) from error
 
 
 def _build_pasted_image_context(images: list[ClipboardImageInput]) -> list[dict]:
@@ -407,7 +426,7 @@ def _build_pasted_image_context(images: list[ClipboardImageInput]) -> list[dict]
                 "name": image.name,
                 "content_type": image.content_type,
                 "parse_status": status,
-                "summary": text[:50000],
+                "summary": text[:PASTED_IMAGE_SUMMARY_LIMIT],
             }
         )
     return rows

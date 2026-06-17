@@ -1484,7 +1484,111 @@ def test_ai_analysis_accepts_pasted_images():
     assert request_json["original_question"] == "请结合这张图片说明问题。"
     assert request_json["pasted_images"][0]["name"] == "clipboard.png"
     assert request_json["pasted_images"][0]["parse_status"] == "已提取图片元信息"
+    assert len(request_json["pasted_images"][0]["summary"]) <= 500
     assert "图片格式: PNG" in request_json["question"]
+
+
+def test_ai_analysis_accepts_wrapped_urlsafe_pasted_images():
+    init_db()
+    client.post("/api/seed")
+    project_id = client.get("/api/projects").json()[0]["id"]
+    png_bytes = build_png()
+    raw = base64.b64encode(png_bytes).decode("ascii").replace("+", "-").replace("/", "_").rstrip("=")
+    wrapped = f"data:image/png;base64,  {raw[:30]}\n{raw[30:90]}\r\n{raw[90:]}  "
+
+    response = client.post(
+        f"/api/projects/{project_id}/ai-analyses",
+        headers={"X-Role": "engineer"},
+        json={
+            "project_item_id": None,
+            "equipment_name": "项目资料",
+            "execution_ids": [],
+            "artifact_ids": [],
+            "question": "请结合这张图片说明问题。",
+            "pasted_images": [
+                {"name": "clipboard.png", "content_type": "image/png", "data_url": wrapped}
+            ],
+        },
+    )
+    assert response.status_code == 200
+
+    db = SessionLocal()
+    saved_analysis = db.query(models.AiAnalysis).order_by(models.AiAnalysis.id.desc()).first()
+    request_json = json.loads(saved_analysis.request_json)
+    db.close()
+    assert request_json["pasted_images"][0]["parse_status"] == "已提取图片元信息"
+    assert "图片格式: PNG" in request_json["question"]
+
+
+def test_ai_analysis_rejects_non_image_pasted_data_url():
+    init_db()
+    client.post("/api/seed")
+    project_id = client.get("/api/projects").json()[0]["id"]
+    text_data_url = "data:text/plain;base64,SGVsbG8="
+
+    response = client.post(
+        f"/api/projects/{project_id}/ai-analyses",
+        headers={"X-Role": "engineer"},
+        json={
+            "project_item_id": None,
+            "equipment_name": "项目资料",
+            "execution_ids": [],
+            "artifact_ids": [],
+            "question": "请结合这张图片说明问题。",
+            "pasted_images": [
+                {"name": "clipboard.txt", "content_type": "text/plain", "data_url": text_data_url}
+            ],
+        },
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"]["message"] == "仅支持粘贴图片，不支持其他文件"
+
+
+def test_ai_analysis_rejects_invalid_base64_pasted_data_url():
+    init_db()
+    client.post("/api/seed")
+    project_id = client.get("/api/projects").json()[0]["id"]
+
+    response = client.post(
+        f"/api/projects/{project_id}/ai-analyses",
+        headers={"X-Role": "engineer"},
+        json={
+            "project_item_id": None,
+            "equipment_name": "项目资料",
+            "execution_ids": [],
+            "artifact_ids": [],
+            "question": "请结合这张图片说明问题。",
+            "pasted_images": [
+                {"name": "clipboard.png", "content_type": "image/png", "data_url": "data:image/png;base64,%%%invalid%%%"}
+            ],
+        },
+    )
+    assert response.status_code == 400
+    assert "Base64 解码失败" in response.json()["detail"]["message"]
+
+
+def test_ai_analysis_rejects_too_short_pasted_image_bytes():
+    init_db()
+    client.post("/api/seed")
+    project_id = client.get("/api/projects").json()[0]["id"]
+    short_data_url = f"data:image/png;base64,{base64.b64encode(b'1234567890').decode('ascii')}"
+
+    response = client.post(
+        f"/api/projects/{project_id}/ai-analyses",
+        headers={"X-Role": "engineer"},
+        json={
+            "project_item_id": None,
+            "equipment_name": "项目资料",
+            "execution_ids": [],
+            "artifact_ids": [],
+            "question": "请结合这张图片说明问题。",
+            "pasted_images": [
+                {"name": "clipboard.png", "content_type": "image/png", "data_url": short_data_url}
+            ],
+        },
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"]["message"] == "解析失败：图片数据过短"
 
 
 def test_project_artifacts_batch_create_all_supported_types():
