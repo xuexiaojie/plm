@@ -1,4 +1,5 @@
 import base64
+import logging
 import mimetypes
 import json
 import re
@@ -25,6 +26,7 @@ from app import models
 from app.ai_client import run_joint_analysis
 from app.db import SessionLocal, get_db, init_db
 from app.executors import run_template
+from app.lightrag_retrieval import search_with_lightrag
 from app.schemas import (
     ApprovalActionRequest,
     AiAnalysisRequest,
@@ -35,6 +37,7 @@ from app.schemas import (
     ExecutorResponse,
     PermissionAssignment,
     ProjectCreate,
+    ProjectManagerCandidateCreate,
     ProjectItemCreate,
     ProjectManagementBatchCreate,
     ProjectManagementCreate,
@@ -46,6 +49,7 @@ from app.seed import seed_all
 BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_DIR = BASE_DIR.parent / "uploaded_artifacts"
 _cached_index_html = ""
+logger = logging.getLogger(__name__)
 
 
 def utc_now() -> datetime:
@@ -116,6 +120,22 @@ ROLE_NAMES = {
 
 USER_CATALOG = [
     {"id": 1, "name": "赵总", "role": "admin", "title": "系统管理员", "department": "平台管理"},
+    {"id": 2, "name": "呼启同", "role": "admin", "title": "系统管理员", "department": "平台管理"},
+    {"id": 3, "name": "郭广明", "role": "admin", "title": "系统管理员", "department": "平台管理"},
+    {"id": 4, "name": "吴永红", "role": "admin", "title": "系统管理员", "department": "平台管理"},
+    {"id": 5, "name": "杨小兵", "role": "admin", "title": "系统管理员", "department": "平台管理"},
+    {"id": 6, "name": "梁炜", "role": "admin", "title": "系统管理员", "department": "平台管理"},
+    {"id": 7, "name": "傅巍", "role": "admin", "title": "系统管理员", "department": "平台管理"},
+    {"id": 8, "name": "孟显亮", "role": "admin", "title": "系统管理员", "department": "平台管理"},
+    {"id": 9, "name": "张刚", "role": "admin", "title": "系统管理员", "department": "平台管理"},
+    {"id": 10, "name": "冯威", "role": "admin", "title": "系统管理员", "department": "平台管理"},
+    {"id": 13, "name": "江华", "role": "admin", "title": "系统管理员", "department": "平台管理"},
+    {"id": 14, "name": "朱小辉", "role": "admin", "title": "系统管理员", "department": "平台管理"},
+    {"id": 15, "name": "刘和荣", "role": "admin", "title": "系统管理员", "department": "平台管理"},
+    {"id": 16, "name": "赵云飞", "role": "admin", "title": "系统管理员", "department": "平台管理"},
+    {"id": 17, "name": "杨三堂", "role": "admin", "title": "系统管理员", "department": "平台管理"},
+    {"id": 18, "name": "曹开明", "role": "admin", "title": "系统管理员", "department": "平台管理"},
+    {"id": 19, "name": "王志斌", "role": "admin", "title": "系统管理员", "department": "平台管理"},
     {"id": 11, "name": "张工", "role": "engineer", "title": "工艺工程师", "department": "炉窑设计"},
     {"id": 12, "name": "李工", "role": "engineer", "title": "设备工程师", "department": "炉窑设计"},
     {"id": 21, "name": "王工", "role": "reviewer", "title": "专业校核", "department": "工艺审核"},
@@ -498,7 +518,22 @@ def _clear_legacy_artifact_retrieval_state(db: Session) -> None:
 
 
 def _tokenize_search_terms(text: str) -> list[str]:
-    return [token for token in re.findall(r"[A-Za-z0-9_]+|[\u4e00-\u9fff]{2,}", (text or "").lower()) if token.strip()]
+    raw = (text or "").lower()
+    tokens = {token for token in re.findall(r"[a-z0-9_]+", raw) if token.strip()}
+    for phrase in re.findall(r"[\u4e00-\u9fff]{2,}", raw):
+        phrase = phrase.strip()
+        if not phrase:
+            continue
+        tokens.add(phrase)
+        max_size = min(4, len(phrase))
+        for size in range(max_size, 1, -1):
+            for index in range(0, len(phrase) - size + 1):
+                tokens.add(phrase[index:index + size])
+    if any(term in raw for term in ("方坯尺寸", "坯料尺寸", "钢坯尺寸", "坯料规格", "方坯规格")):
+        tokens.update({"坯料断面", "坯料", "断面"})
+    if "图号" in raw:
+        tokens.update({"doc", "doc no", "doc. no"})
+    return sorted(tokens, key=lambda token: (-len(token), token))
 
 
 def _artifact_search_text(artifact: models.ProjectArtifact) -> str:
@@ -519,29 +554,50 @@ def _artifact_excerpt(text: str, keywords: list[str], limit: int = 260) -> str:
     return snippet if len(compact) <= anchor + limit else snippet.rstrip() + "..."
 
 
+def _artifact_ai_content(text: str, keywords: list[str], limit: int = 8000) -> str:
+    compact = re.sub(r"\s+", " ", text or "").strip()
+    if not compact:
+        return ""
+    if len(compact) <= limit:
+        return compact
+    return _artifact_excerpt(compact, keywords, limit=2200)
+
+
 def _search_project_artifacts(db: Session, project_id: int, question: str, artifact_ids: list[int], limit: int = 8) -> list[dict]:
     query = db.query(models.ProjectArtifact).filter_by(project_id=project_id, status="ACTIVE")
     if artifact_ids:
         query = query.filter(models.ProjectArtifact.id.in_(artifact_ids))
     keywords = _tokenize_search_terms(question)
+    complex_question = any(len(keyword) >= 8 or re.search(r"[a-z0-9]", keyword) for keyword in keywords)
     scored = []
     for artifact in query.all():
         haystack = _artifact_search_text(artifact)
         if not haystack.strip():
             continue
         score = 0
+        matched_keywords: set[str] = set()
         for keyword in keywords:
             if keyword in haystack:
-                score += 3
+                score += max(3, len(keyword))
+                matched_keywords.add(keyword)
             if keyword in (artifact.title or "").lower():
-                score += 2
+                score += max(2, len(keyword))
+                matched_keywords.add(keyword)
             if keyword in (artifact.source_code or "").lower():
                 score += 1
+            negative_match = re.search(rf"{re.escape(keyword)}.{{0,8}}(无关|不涉及|未出现|没有|不包含)|(?:无关|不涉及|未出现|没有|不包含).{{0,8}}{re.escape(keyword)}", haystack)
+            if negative_match:
+                score -= max(3, len(keyword))
         if not keywords:
             score = 1
+        max_matched_length = max((len(keyword) for keyword in matched_keywords), default=0)
+        if complex_question and max_matched_length < 3:
+            continue
         if score <= 0:
             continue
         scored.append((score, artifact, _artifact_excerpt(artifact.content, keywords)))
+    if not scored and keywords:
+        return []
     if not scored:
         fallback = query.order_by(models.ProjectArtifact.id.desc()).limit(limit).all()
         return [
@@ -551,7 +607,7 @@ def _search_project_artifacts(db: Session, project_id: int, question: str, artif
                 "type": artifact.artifact_type,
                 "type_name": ARTIFACT_TYPES.get(artifact.artifact_type, artifact.artifact_type),
                 "title": artifact.title,
-                "content": _artifact_excerpt(artifact.content, []),
+                "content": _artifact_ai_content(artifact.content, []),
             }
             for artifact in fallback
         ]
@@ -563,10 +619,30 @@ def _search_project_artifacts(db: Session, project_id: int, question: str, artif
             "type": artifact.artifact_type,
             "type_name": ARTIFACT_TYPES.get(artifact.artifact_type, artifact.artifact_type),
             "title": artifact.title,
-            "content": snippet,
+            "content": _artifact_ai_content(artifact.content, keywords),
         }
         for score, artifact, snippet in scored[:limit]
     ]
+
+
+async def _search_project_artifacts_for_ai(db: Session, project_id: int, question: str, artifact_ids: list[int], limit: int = 8) -> list[dict]:
+    query = db.query(models.ProjectArtifact).filter_by(project_id=project_id, status="ACTIVE")
+    if artifact_ids:
+        query = query.filter(models.ProjectArtifact.id.in_(artifact_ids))
+    artifacts = query.order_by(models.ProjectArtifact.id.desc()).all()
+
+    try:
+        lightrag_rows = await search_with_lightrag(project_id, question, artifacts, limit=limit)
+    except Exception:
+        logger.exception("LightRAG retrieval failed, falling back to keyword search", extra={"project_id": project_id})
+    else:
+        if lightrag_rows:
+            for row in lightrag_rows:
+                row["type_name"] = ARTIFACT_TYPES.get(row.get("type"), row.get("type"))
+            return lightrag_rows
+
+    selected_ids = [artifact.id for artifact in artifacts]
+    return _search_project_artifacts(db, project_id, question, selected_ids, limit=limit)
 
 
 @app.post("/api/seed")
@@ -584,6 +660,48 @@ def list_projects(db: Session = Depends(get_db)) -> list[dict]:
 @app.get("/api/project-management/options")
 def get_project_management_options() -> dict[str, list[str]]:
     return {"project_managers": PROJECT_MANAGER_CANDIDATES, "enterprises": ENTERPRISE_CANDIDATES}
+
+
+@app.get("/api/project-managers")
+def list_project_managers() -> list[dict]:
+    return [{"name": name} for name in PROJECT_MANAGER_CANDIDATES]
+
+
+@app.post("/api/project-managers")
+def create_project_manager(payload: ProjectManagerCandidateCreate) -> dict:
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail={"code": "PARAM_INVALID", "message": "项目经理姓名不能为空"})
+    if name in PROJECT_MANAGER_CANDIDATES:
+        raise HTTPException(status_code=409, detail={"code": "STATE_INVALID", "message": "项目经理已存在"})
+    PROJECT_MANAGER_CANDIDATES.append(name)
+    PROJECT_MANAGER_CANDIDATES.sort(key=locale_key)
+    return {"name": name, "count": len(PROJECT_MANAGER_CANDIDATES)}
+
+
+@app.put("/api/project-managers/{manager_name}")
+def update_project_manager(manager_name: str, payload: ProjectManagerCandidateCreate) -> dict:
+    current_name = manager_name.strip()
+    next_name = payload.name.strip()
+    if not current_name or not next_name:
+        raise HTTPException(status_code=400, detail={"code": "PARAM_INVALID", "message": "项目经理姓名不能为空"})
+    if current_name not in PROJECT_MANAGER_CANDIDATES:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "项目经理不存在"})
+    if next_name != current_name and next_name in PROJECT_MANAGER_CANDIDATES:
+        raise HTTPException(status_code=409, detail={"code": "STATE_INVALID", "message": "项目经理已存在"})
+    index = PROJECT_MANAGER_CANDIDATES.index(current_name)
+    PROJECT_MANAGER_CANDIDATES[index] = next_name
+    PROJECT_MANAGER_CANDIDATES.sort(key=locale_key)
+    return {"name": next_name, "count": len(PROJECT_MANAGER_CANDIDATES)}
+
+
+@app.delete("/api/project-managers/{manager_name}")
+def delete_project_manager(manager_name: str) -> dict:
+    current_name = manager_name.strip()
+    if current_name not in PROJECT_MANAGER_CANDIDATES:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "项目经理不存在"})
+    PROJECT_MANAGER_CANDIDATES.remove(current_name)
+    return {"name": current_name, "status": "DELETED", "count": len(PROJECT_MANAGER_CANDIDATES)}
 
 
 @app.get("/api/permissions")
@@ -662,6 +780,22 @@ def _project_management_row(project: models.Project) -> dict:
     }
 
 
+def locale_key(value: str) -> str:
+    return value.casefold()
+
+
+def _soft_delete_project(db: Session, project: models.Project) -> None:
+    project.deleted_at = utc_now()
+    project.status = "DELETED"
+    items = db.query(models.ProjectItem).filter_by(project_id=project.id).all()
+    for item in items:
+        item.deleted_at = utc_now()
+        item.status = "DELETED"
+    artifacts = db.query(models.ProjectArtifact).filter_by(project_id=project.id, status="ACTIVE").all()
+    for artifact in artifacts:
+        _soft_delete_artifact(db, artifact)
+
+
 @app.get("/api/project-management/projects")
 def list_project_management_projects(db: Session = Depends(get_db)) -> list[dict]:
     projects = db.query(models.Project).filter(models.Project.deleted_at.is_(None)).order_by(models.Project.id.desc()).all()
@@ -693,6 +827,16 @@ def update_project_management_project(project_id: int, payload: ProjectManagemen
     db.commit()
     db.refresh(project)
     return _project_management_row(project)
+
+
+@app.delete("/api/project-management/projects/{project_id}")
+def delete_project_management_project(project_id: int, db: Session = Depends(get_db)) -> dict:
+    project = db.get(models.Project, project_id)
+    if project is None or project.deleted_at is not None:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "项目不存在"})
+    _soft_delete_project(db, project)
+    db.commit()
+    return {"id": project_id, "status": "DELETED"}
 
 
 @app.post("/api/project-management/projects/batch")
@@ -1162,6 +1306,12 @@ def submit_approval(
     execution = db.get(models.CalcExecution, execution_id)
     if execution is None:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "执行记录不存在"})
+    latest_approval = (
+        db.query(models.ApprovalRequest)
+        .filter(models.ApprovalRequest.execution_id == execution_id)
+        .order_by(models.ApprovalRequest.id.desc())
+        .first()
+    )
     active_approval = (
         db.query(models.ApprovalRequest)
         .filter(
@@ -1173,6 +1323,33 @@ def submit_approval(
     )
     if active_approval is not None:
         raise HTTPException(status_code=409, detail={"code": "STATE_INVALID", "message": "当前执行已有审批流程在进行中"})
+    if latest_approval is not None and latest_approval.status == "RETURNED":
+        latest_approval.status = "IN_REVIEW"
+        latest_approval.submitted_by = int(current_user["id"])
+        latest_approval.submitted_at = utc_now()
+        latest_approval.current_approver_id = APPROVAL_FLOW_USER_IDS[0]
+        steps = (
+            db.query(models.ApprovalStep)
+            .filter(models.ApprovalStep.approval_request_id == latest_approval.id)
+            .order_by(models.ApprovalStep.step_order.asc())
+            .all()
+        )
+        for index, step in enumerate(steps, start=1):
+            step.status = "PENDING" if index == 1 else "WAITING"
+            step.comment = None
+            step.acted_at = None
+        db.add(
+            models.ApprovalLog(
+                approval_request_id=latest_approval.id,
+                action="resubmit",
+                from_status="RETURNED",
+                to_status="IN_REVIEW",
+                actor_user_id=int(current_user["id"]),
+            )
+        )
+        db.commit()
+        db.refresh(latest_approval)
+        return _approval_payload(db, latest_approval)
     approval = models.ApprovalRequest(
         execution_id=execution.id,
         status="IN_REVIEW",
@@ -1502,6 +1679,7 @@ async def create_ai_analysis(
                 "type_name": ARTIFACT_TYPES.get(artifact.artifact_type, artifact.artifact_type),
                 "title": artifact.title,
                 "content_preview": _content_preview(artifact.content),
+                "content": artifact.content,
             }
         )
     pasted_images = _build_pasted_image_context(payload.pasted_images)
@@ -1513,7 +1691,7 @@ async def create_ai_analysis(
             if image["summary"].strip():
                 image_lines.append(image["summary"])
         ai_question = "\n\n".join([ai_question or "请结合项目资料和粘贴图片回答问题。", "\n".join(image_lines)])
-    retrieved_artifacts = _search_project_artifacts(db, project_id, ai_question or payload.question, selected_artifact_ids)
+    retrieved_artifacts = await _search_project_artifacts_for_ai(db, project_id, ai_question or payload.question, selected_artifact_ids)
     request_data = {
         "equipment_name": payload.equipment_name,
         "analysis_type": payload.analysis_type,

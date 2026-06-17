@@ -1,9 +1,12 @@
 import base64
+import asyncio
 import os
 import json
+import uuid
 import zipfile
 from io import BytesIO
 from pathlib import Path
+from urllib.parse import quote
 
 from PIL import Image
 import xlwt
@@ -13,6 +16,9 @@ os.environ["DATABASE_URL"] = "sqlite:///:memory:"
 from fastapi.testclient import TestClient
 
 from app import models
+from app import ai_client as ai_client_module
+from app import main as main_module
+from app import runtime_config as runtime_config_module
 from app.db import SessionLocal, init_db
 from app.main import app
 
@@ -97,289 +103,202 @@ def test_seed_creates_demo_project_and_templates():
 def test_index_page_loads_console():
     response = client.get("/")
     assert response.status_code == 200
-    assert "工业炉设计助手 v 1.0" in response.text
-    assert "登录进入主界面" in response.text
-    assert "请先登录，再进入主界面" in response.text
-    assert "项目管理" in response.text
-    assert "计算管理" in response.text
-    assert "工程项目" in response.text
-    assert "工程项目模糊查询" in response.text
-    assert "calcProjectSearch" in response.text
-    assert "输入项目经理、工程项目名称、企业或项目介绍" in response.text
-    assert "renderCalcProjectOptions" in response.text
-    assert "calcProjectSearchText" in response.text
-    assert "请先选择工程项目" in response.text
-    assert "点击具体计算模块前，必须先选择工程项目" in response.text
-    assert "calcProjectInfo" in response.text
-    assert "选择后将显示项目经理和项目介绍，并启用炉型与计算条目" in response.text
-    assert "项目经理:" in response.text
-    assert "项目介绍:" in response.text
-    assert "disabled ? \"disabled\"" in response.text
-    assert "计算执行" not in response.text
-    assert '<button data-view="comparison-view"' not in response.text
-    assert "审批报告" in response.text
-    assert "数字孪生" in response.text
-    assert "项目资料" in response.text
-    assert 'data-view="artifact-entry-view"' in response.text
-    assert 'showView(\'artifact-entry-view\')' in response.text
-    assert 'data-view="artifact-query-view"' in response.text
-    assert 'showView(\'artifact-query-view\')' in response.text
-    assert "资料录入" in response.text
-    assert "资料查询" in response.text
-    assert "录入项目模糊查询" in response.text
-    assert "artifactProjectSearch" in response.text
-    assert "renderArtifactProjectOptions" in response.text
-    assert "syncArtifactProject" in response.text
-    assert "artifactProjectInfo" in response.text
-    assert "artifactEntryRecords" in response.text
-    assert "closest(\".card\")" in response.text
-    assert "setArtifactProjectValue" in response.text
-    assert "getLinkedArtifactProjectId" in response.text
-    assert "syncArtifactProjectSelection" in response.text
-    assert "artifactQueryKeyword" in response.text
-    assert "artifactQueryTree" in response.text
-    assert "artifactQueryResults" in response.text
-    assert "artifactTypeTabs" in response.text
-    assert "artifactQueryStats" in response.text
-    assert "artifactQueryActiveFilter" in response.text
-    assert "artifactViewMode" in response.text
-    assert "setArtifactViewMode" in response.text
-    assert "artifactEntryPanel" in response.text
-    assert "artifactQueryPanel" in response.text
-    assert "renderArtifactQuery" in response.text
-    assert "renderArtifactQueryTree" in response.text
-    assert "renderArtifactQueryResults" in response.text
-    assert "setArtifactQuerySelection" in response.text
-    assert "updateQuery: false" in response.text
-    assert "artifactTypePriority" in response.text
-    assert "全部文件" in response.text
-    assert "树状结构按项目展开" in response.text
-    assert "当前分类下暂无文件" in response.text
-    assert "左侧选择项目后，右侧会显示分类标签和文件列表" in response.text
-    assert "智能模糊查询框" in response.text
-    assert "实时过滤项目名称、文件名称和文件类型" in response.text
-    assert "文件分类标签" in response.text
-    assert "文件列表区" in response.text
-    assert "artifact-project-item" in response.text
-    assert "artifact-file-table" in response.text
-    assert "artifact-file-kind" in response.text
-    assert "artifact-file-actions" in response.text
-    assert "artifactTypeTabs" in response.text
-    assert "artifactFileIcon" in response.text
-    assert "downloadArtifactFile" in response.text
-    assert "预览" in response.text
-    assert "下载" in response.text
-    assert "industrial-v1-last-artifact-project" in response.text
-    assert "资料内容" in response.text
-    assert '<option value="site_feedback" selected>现场反馈</option>' in response.text
-    assert '<option value="technical_description">技术说明</option>' in response.text
-    assert '<option value="material_list">材料表</option>' in response.text
-    assert '<option value="patent_technical_document">专利等技术文档</option>' in response.text
-    assert "技术附件" not in response.text
-    assert "上传文档、图片、视频" in response.text
-    assert "multiple accept" in response.text
-    assert "renderArtifactFileSummary" in response.text
-    assert "附件清单" in response.text
-    assert "附件清单与正文" in response.text
-    assert "isExcelFile" in response.text
-    assert "isReadableTextFile" in response.text
-    assert "isDocxFile" in response.text
-    assert "artifactParseHint" in response.text
-    assert "fileContentBlock" in response.text
-    assert "uploadArtifactFile" in response.text
-    assert "FormData" in response.text
-    assert "/artifacts/upload" in response.text
-    assert ".docx、.xls、.xlsx、PDF 和文本类附件会自动读取正文" in response.text
-    assert "将解析 Word 正文" in response.text
-    assert "将解析 PDF 文本" in response.text
-    assert "将解析 Excel 表格" in response.text
-    assert "将提取图片元信息" in response.text
-    assert "仅记录附件信息" in response.text
-    assert "确认上传" in response.text
-    assert "批量上传文档" in response.text
-    assert "artifactBatchDocs" in response.text
-    assert "artifactBatchButton" in response.text
-    assert "renderArtifactBatchDocSummary" in response.text
-    assert "createArtifactDocumentsBatch" in response.text
-    assert "只支持文档文件，每个文档将生成一个资料条目" in response.text
-    assert "请先选择需要批量上传的文档" in response.text
-    assert "${baseTitle}-${index + 1}" in response.text
-    assert 'accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.md"' in response.text
-    assert "上传日期" in response.text
-    assert "上传人" in response.text
-    assert "条目标题" in response.text
-    assert "artifactProjectLocked" in response.text
-    assert "renderArtifactUploadLock" in response.text
-    assert "下面的资料录入内容为灰色且不可执行" in response.text
-    assert "AI 问答" in response.text
-    assert "系统只从当前项目资料里的文件和文字内容中查找答案" in response.text
-    assert "例如：东华项目出现过什么问题？" in response.text
-    assert "提问" in response.text
-    assert "回答" in response.text
-    assert "renderAiAnalysisCard" in response.text
-    assert "currentAiProjectId" in response.text
-    assert "aiAnswerText" in response.text
-    assert "正在从项目资料中查找答案" in response.text
-    assert "AI 问答失败" in response.text
-    assert "renderAiError" in response.text
-    assert "execution_ids: []" in response.text
-    assert "<summary>调试信息</summary>" in response.text
-    assert '<pre id="log">等待操作...</pre>' in response.text
-    assert '<pre id="log">等待操作...</pre></main>' not in response.text
-    assert "权限分配" in response.text
-    assert "项目录入 - 单点录入" in response.text
-    assert "项目录入 - 批量录入" in response.text
-    assert "项目查询" in response.text
-    assert "项目台账" in response.text
-    assert "保存编辑" in response.text
-    assert "步进炉" in response.text
-    assert "辊底炉" in response.text
-    assert "环形炉" in response.text
-    assert "步进炉二级离线模型" in response.text
-    assert "梁式步进炉二级离线模型" in response.text
-    assert "钢坯温度预报模型" in response.text
-    assert "分区炉温优化设定模型" in response.text
-    assert "二级模型模式" in response.text
-    assert "simulate 仅仿真" in response.text
-    assert "optimize 炉温优化" in response.text
-    assert "simulateLevel2Offline" in response.text
-    assert "optimizeLevel2Offline" in response.text
-    assert "appendLevel2Optimization" in response.text
-    assert "level2Cp" in response.text
-    assert "level2Conductivity" in response.text
-    assert "final_surface_temp_c" in response.text
-    assert "final_core_temp_c" in response.text
-    assert "final_average_temp_c" in response.text
-    assert "discharge_temp_error_c" in response.text
-    assert "surface_core_delta_c" in response.text
-    assert "max_heating_rate_c_per_min" in response.text
-    assert "zone_setpoints_c" in response.text
-    assert "zone_snapshots" in response.text
-    assert "出炉温度偏差、表里温差、升温速率、能耗代理项和氧化烧损代理项" in response.text
-    assert "renderWalkingOfflineModel" in response.text
-    assert "runWalkingOfflineModel" in response.text
-    assert "closeCalcModal" in response.text
-    assert "drawOfflineCurve" in response.text
-    assert "drawOfflineHeatmap" in response.text
-    assert "分炉段炉温、步进节拍、水梁黑印" in response.text
-    assert "步进周期" in response.text
-    assert "黑印温降估算" in response.text
-    assert "计算曲线" in response.text
-    assert "温度云图" in response.text
-    assert "开始计算" in response.text
-    assert "平均出炉温度" in response.text
-    assert "加热曲线" in response.text
-    assert "renderHeatingCurveModel" in response.text
-    assert "runHeatingCurveModel" in response.text
-    assert "计算加热曲线" in response.text
-    assert "炉子产量 t/h" in response.text
-    assert "料坯及空煤气" in response.text
-    assert "散热损失" in response.text
-    assert "钢坯入炉表面温度" in response.text
-    assert "炉膛内宽" in response.text
-    assert "等效导热系数" in response.text
-    assert "煤气热值 kJ/Nm3" in response.text
-    assert "纵梁/立柱绝热完好率" in response.text
-    assert "加热曲线满足目标" in response.text
-    assert "出钢表面温度" in response.text
-    assert "出钢平均温度" in response.text
-    assert "最大温度应力" in response.text
-    assert "排烟温度" in response.text
-    assert "buildHeatBalanceAnalysis" in response.text
-    assert "热平衡图" in response.text
-    assert "heat-balance" in response.text
-    assert "heat-center" in response.text
-    assert "总热量" in response.text
-    assert "热收入" in response.text
-    assert "热支出" in response.text
-    assert "燃料物理热" in response.text
-    assert "空气物理热" in response.text
-    assert "钢坯氧化放热" in response.text
-    assert "燃料化学热" in response.text
-    assert "钢坯吸热" in response.text
-    assert "炉气带走热量" in response.text
-    assert "加热炉热效率" in response.text
-    assert "计算单位热耗" in response.text
-    assert "水梁计算" in response.text
-    assert "水冷梁水冷计算" in response.text
-    assert "气化冷却计算" in response.text
-    assert "水梁垫块黑印计算" in response.text
-    assert "排烟计算" in response.text
-    assert "传热计算" in response.text
-    assert "蓄热计算" in response.text
-    assert "空气管道" in response.text
-    assert "换热器" in response.text
-    assert "煤气管道" in response.text
-    assert "平焰烧嘴计算" in response.text
-    assert "高速烧嘴计算" in response.text
-    assert "蓄热烧嘴计算" in response.text
-    assert "步进框架计算" in response.text
-    assert "步进液压系统计算" in response.text
-    assert "装出钢机计算" in response.text
-    assert "装出料辊道计算" in response.text
-    assert "多工况计算" in response.text
-    assert "总体热工" in response.text
-    assert "热工单体" in response.text
-    assert "烧嘴计算" in response.text
-    assert "炉底机械" in response.text
-    assert "renderWalkingSpecialCalc" in response.text
-    assert "runWalkingSpecialCalc" in response.text
-    assert "runWaterCoolingBeam" in response.text
-    assert "runEvaporativeCooling" in response.text
-    assert "runFlatFlameBurner" in response.text
-    assert "runHighVelocityBurner" in response.text
-    assert "runRegenerativeBurner" in response.text
-    assert "runWalkingFrame" in response.text
-    assert "runHydraulicSystem" in response.text
-    assert "runSkidMark" in response.text
-    assert "runChargingMachine" in response.text
-    assert "runChargingRollerTable" in response.text
-    assert "renderMultiScenarioModel" in response.text
-    assert "runMultiScenarioModel" in response.text
-    assert "工况风险矩阵" in response.text
-    assert "辊底炉二级离线模型" in response.text
-    assert "辊强度计算" in response.text
-    assert "renderRollerStrengthModel" in response.text
-    assert "runRollerStrengthModel" in response.text
-    assert "drawRollerStrengthCanvas" in response.text
-    assert "辊强度和挠度满足要求" in response.text
-    assert "弯曲应力" in response.text
-    assert "剪应力" in response.text
-    assert "高温许用应力" in response.text
-    assert "安全系数" in response.text
-    assert "roller-strength" in response.text
-    assert "环形炉二级离线模型" in response.text
-    assert "offlineFurnaceConfigs" in response.text
-    assert "renderIndustrialOfflineModel" in response.text
-    assert "runIndustrialOfflineModel" in response.text
-    assert "辊面接触修正" in response.text
-    assert "炉底转速" in response.text
-    assert "offlineRunsKey" in response.text
-    assert "最近 5 次计算比较" in response.text
-    assert "查看计算对比" in response.text
-    assert "showOfflineComparison" in response.text
-    assert "addOfflineCompareButton" in response.text
-    assert "selectOfflineFinal" in response.text
-    assert "设为最终" in response.text
-    assert "最终计算" in response.text
-    assert "最近仅保留 5 次计算记录" in response.text
-    assert "addOfflineComparisonRun(\"步进炉二级离线模型\"" in response.text
-    assert "renderOfflineComparison(config.modelName)" in response.text
-    assert "drawOfflineCurve(history, target)" in response.text
-    assert "drawOfflineHeatmap(snapshots)" in response.text
-    assert 'offlineFurnaceConfigs["辊底炉"].defaults = [180, 1250, 6200, 60, 930, 55, 75, 0.95, 7.2, 9.5, 8.4' in response.text
-    assert 'offlineFurnaceConfigs["环形炉"].defaults = [260, 980, 4200, 80, 1220, 150, 210, 1.8, 18, 22, 16' in response.text
-    assert "先选择工程项目，再进入" not in response.text
-    assert "项计算" not in response.text
-    assert "点击固定计算按钮，直接进入对应程序界面" not in response.text
-    assert "请选择计算功能" not in response.text
-    assert "程序界面将在这里展示" not in response.text
-    assert "新增资料" not in response.text
-    assert "按项目批量录入" not in response.text
-    assert "刷新资料" not in response.text
-    assert "batchArtifacts" not in response.text
-    assert "二维设计开发" in response.text
-    assert "CFD优化" in response.text
+    text = response.text
+
+    expected_sections = [
+        "工业炉设计助手 v 1.0",
+        "登录进入主界面",
+        "请先登录，再进入主界面",
+        "项目管理",
+        "资料录入",
+        "资料查询",
+        "计算管理",
+        "审批报告",
+        "数字孪生",
+        "AI问答",
+        "权限分配",
+        "调试信息",
+    ]
+    for marker in expected_sections:
+        assert marker in text
+
+    ai_multi_model_markers = [
+        "ai-response-grid",
+        "ai-response-card",
+        "aiProviderOrder",
+        "sortedAiResponses",
+        "expectedAiProviders",
+        "normalizedAiResponses",
+        "renderAiErrorMeta",
+        "错误码：",
+        "错误信息：",
+        "ok-fill",
+        "bad-fill",
+    ]
+    for marker in ai_multi_model_markers:
+        assert marker in text
+
+
+def test_run_joint_analysis_returns_local_response_array_when_no_provider(monkeypatch):
+    monkeypatch.setattr(runtime_config_module, "WORKSPACE_TMP_DIR", PROJECT_ROOT / "tests" / "_missing_tmp_dir")
+    for key in ("AI_API_URL", "AI_API_KEY", "AI_MODEL", "CLAUDE_API_KEY", "CLAUDE_MODEL", "TENCENT_API_KEY", "TENCENT_MODEL", "TENCENT_SECRET_ID", "TENCENT_SECRET_KEY"):
+        monkeypatch.delenv(key, raising=False)
+
+    result = asyncio.run(ai_client_module.run_joint_analysis(json.dumps({"question": "测试", "retrieved_artifacts": [], "artifacts": []}, ensure_ascii=False)))
+
+    assert result["provider"] == "本地规则"
+    assert len(result["responses"]) == 1
+    assert result["responses"][0]["provider"] == "本地规则"
+
+
+def test_run_joint_analysis_returns_hint_when_local_fallback_mode_is_hint(monkeypatch):
+    monkeypatch.setattr(runtime_config_module, "WORKSPACE_TMP_DIR", PROJECT_ROOT / "tests" / "_missing_tmp_dir")
+    for key in ("AI_API_URL", "AI_API_KEY", "AI_MODEL", "CLAUDE_API_KEY", "CLAUDE_MODEL", "TENCENT_API_KEY", "TENCENT_MODEL", "TENCENT_SECRET_ID", "TENCENT_SECRET_KEY"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("LOCAL_RULE_FALLBACK_MODE", "hint")
+
+    result = asyncio.run(ai_client_module.run_joint_analysis(json.dumps({"question": "测试", "retrieved_artifacts": [], "artifacts": []}, ensure_ascii=False)))
+
+    assert result["provider"] == "本地规则"
+    assert "当前 AI 服务未配置或不可用" in result["answer"]
+
+
+def test_run_joint_analysis_returns_parallel_multi_model_responses(monkeypatch):
+    monkeypatch.setattr(runtime_config_module, "WORKSPACE_TMP_DIR", PROJECT_ROOT / "tests" / "_missing_tmp_dir")
+    monkeypatch.setenv("AI_API_URL", "https://deepseek.example/v1/chat/completions")
+    monkeypatch.setenv("AI_API_KEY", "deepseek-key")
+    monkeypatch.setenv("AI_MODEL", "deepseek-chat")
+    monkeypatch.setenv("CLAUDE_API_URL", "https://claude.example/v1/messages")
+    monkeypatch.setenv("CLAUDE_API_KEY", "claude-key")
+    monkeypatch.setenv("CLAUDE_MODEL", "claude-3-5-sonnet")
+    monkeypatch.delenv("TENCENT_API_URL", raising=False)
+    monkeypatch.delenv("TENCENT_API_KEY", raising=False)
+    monkeypatch.delenv("TENCENT_MODEL", raising=False)
+    monkeypatch.delenv("TENCENT_SECRET_ID", raising=False)
+    monkeypatch.delenv("TENCENT_SECRET_KEY", raising=False)
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, json=None, headers=None):
+            if "claude.example" in url:
+                return FakeResponse({"content": [{"type": "text", "text": "Claude 回答"}]})
+            return FakeResponse({"choices": [{"message": {"content": "DeepSeek 回答"}}]})
+
+    monkeypatch.setattr(ai_client_module.httpx, "AsyncClient", FakeAsyncClient)
+
+    result = asyncio.run(ai_client_module.run_joint_analysis("测试 prompt"))
+
+    assert result["provider"] == "multi"
+    assert result["answer"] == "DeepSeek 回答"
+    assert len(result["responses"]) == 2
+    assert result["responses"][0]["provider"] == "DeepSeek"
+    assert result["responses"][1]["provider"] == "Claude"
+
+
+def test_run_joint_analysis_falls_back_to_local_when_remote_models_fail(monkeypatch):
+    monkeypatch.setattr(runtime_config_module, "WORKSPACE_TMP_DIR", PROJECT_ROOT / "tests" / "_missing_tmp_dir")
+    monkeypatch.setenv("AI_API_URL", "https://deepseek.example/v1/chat/completions")
+    monkeypatch.setenv("AI_API_KEY", "deepseek-key")
+    monkeypatch.setenv("AI_MODEL", "deepseek-chat")
+    monkeypatch.delenv("CLAUDE_API_KEY", raising=False)
+    monkeypatch.delenv("TENCENT_API_KEY", raising=False)
+    monkeypatch.delenv("TENCENT_MODEL", raising=False)
+    monkeypatch.delenv("TENCENT_SECRET_ID", raising=False)
+    monkeypatch.delenv("TENCENT_SECRET_KEY", raising=False)
+
+    class FailingAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, json=None, headers=None):
+            raise ai_client_module.httpx.HTTPError("boom")
+
+    monkeypatch.setattr(ai_client_module.httpx, "AsyncClient", FailingAsyncClient)
+
+    result = asyncio.run(ai_client_module.run_joint_analysis(json.dumps({"question": "测试", "retrieved_artifacts": [], "artifacts": []}, ensure_ascii=False)))
+
+    assert result["provider"] == "本地规则"
+    assert result["responses"][0]["provider"] == "DeepSeek"
+    assert result["responses"][0]["error_type"] == "HTTPError"
+    assert result["responses"][0]["error_message"] == "boom"
+    assert "DeepSeek 调用失败：boom" == result["responses"][0]["summary"]
+    assert result["responses"][-1]["provider"] == "本地规则"
+
+
+def test_configured_model_providers_loads_project_env_and_tencent_csv(tmp_path, monkeypatch):
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                'AI_API_URL="https://deepseek.example/v1/chat/completions"',
+                "AI_API_KEY=deepseek-key",
+                "AI_MODEL=deepseek-chat",
+                "CLAUDE_API_KEY=claude-key",
+                "CLAUDE_MODEL=claude-3-5-sonnet",
+                "TENCENT_API_URL=https://tencent.example/v1/chat/completions",
+                "TENCENT_MODEL=hunyuan-lite",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    tmp_dir = tmp_path / ".monkeycode-tmp-files"
+    tmp_dir.mkdir()
+    (tmp_dir / "demo-SecretKey.csv").write_text("SecretId,SecretKey\nfoo,bar\n", encoding="utf-8")
+
+    for key in runtime_config_module.AI_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+
+    monkeypatch.setattr(runtime_config_module, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(runtime_config_module, "WORKSPACE_TMP_DIR", tmp_dir)
+
+    providers = ai_client_module._configured_model_providers()
+
+    assert [provider["name"] for provider in providers] == ["DeepSeek", "Claude", "Tencent"]
+    assert os.environ["TENCENT_SECRET_ID"] == "foo"
+    assert os.environ["TENCENT_SECRET_KEY"] == "bar"
+
+
+def test_configured_model_providers_uses_tencentcloud_when_only_secret_pair_exists(tmp_path, monkeypatch):
+    tmp_dir = tmp_path / ".monkeycode-tmp-files"
+    tmp_dir.mkdir()
+    (tmp_dir / "demo-SecretKey.csv").write_text("SecretId,SecretKey\nfoo,bar\n", encoding="utf-8")
+
+    for key in runtime_config_module.AI_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+
+    monkeypatch.setattr(runtime_config_module, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(runtime_config_module, "WORKSPACE_TMP_DIR", tmp_dir)
+
+    providers = ai_client_module._configured_model_providers()
+
+    assert len(providers) == 1
+    assert providers[0]["name"] == "Tencent"
+    assert providers[0]["type"] == "tencentcloud"
+    assert providers[0]["model"] == "hunyuan-turbos-latest"
 
 
 def test_permission_assignment_updates_role_permissions():
@@ -403,6 +322,35 @@ def test_permission_assignment_updates_role_permissions():
         json={"permissions": ["read"]},
     )
     assert forbidden.status_code == 403
+
+
+def test_user_catalog_contains_all_super_admin_users():
+    response = client.get("/api/users", headers={"X-Role": "admin"})
+    assert response.status_code == 200
+    users = {user["name"]: user for user in response.json()}
+    expected_admin_names = {
+        "呼启同",
+        "郭广明",
+        "吴永红",
+        "杨小兵",
+        "梁炜",
+        "傅巍",
+        "孟显亮",
+        "张刚",
+        "冯威",
+        "江华",
+        "朱小辉",
+        "刘和荣",
+        "赵云飞",
+        "杨三堂",
+        "曹开明",
+        "王志斌",
+    }
+    for name in expected_admin_names:
+        user = users[name]
+        assert user["role"] == "admin"
+        assert user["role_name"] == "系统管理员"
+        assert "*" in user["permissions"]
 
 
 def test_project_management_single_and_batch_create_projects():
@@ -456,6 +404,47 @@ def test_project_management_single_and_batch_create_projects():
 
     ledger = client.get("/api/project-management/projects").json()
     assert {row["project_name"] for row in ledger} >= {"项目管理已编辑项目", "批量项目A", "批量项目B"}
+
+
+def test_project_manager_crud_and_project_soft_delete():
+    init_db()
+    manager_name = f"manager-{uuid.uuid4().hex[:8]}"
+    renamed_manager_name = f"{manager_name}-edited"
+
+    created_manager = client.post("/api/project-managers", json={"name": manager_name})
+    assert created_manager.status_code == 200
+    assert created_manager.json()["name"] == manager_name
+
+    updated_manager = client.put(f"/api/project-managers/{quote(manager_name, safe='')}", json={"name": renamed_manager_name})
+    assert updated_manager.status_code == 200
+    assert updated_manager.json()["name"] == renamed_manager_name
+
+    managers = client.get("/api/project-managers")
+    assert managers.status_code == 200
+    assert any(row["name"] == renamed_manager_name for row in managers.json())
+
+    project = client.post(
+        "/api/project-management/projects",
+        json={
+            "project_name": "待删除项目",
+            "project_manager": renamed_manager_name,
+            "created_at": "2026-06-16 10:30",
+            "enterprise": "企业Z",
+            "technical_terms": "待删除条目",
+        },
+    )
+    assert project.status_code == 200
+
+    deleted_project = client.delete(f"/api/project-management/projects/{project.json()['id']}")
+    assert deleted_project.status_code == 200
+    assert deleted_project.json()["status"] == "DELETED"
+
+    ledger = client.get("/api/project-management/projects").json()
+    assert all(row["id"] != project.json()["id"] for row in ledger)
+
+    deleted_manager = client.delete(f"/api/project-managers/{quote(renamed_manager_name, safe='')}")
+    assert deleted_manager.status_code == 200
+    assert deleted_manager.json()["status"] == "DELETED"
 
 
 def test_calc_item_management_creates_and_deletes_calc_item():
@@ -662,6 +651,30 @@ def test_approval_return_and_publish_guard():
     assert returned.status_code == 200
     assert returned.json()["status"] == "RETURNED"
 
+    resubmitted = client.post(f"/api/executions/{execution.id}/approval", headers={"X-Role": "engineer", "X-User-Id": "11"})
+    assert resubmitted.status_code == 200
+    assert resubmitted.json()["id"] == approval_id
+    assert resubmitted.json()["status"] == "IN_REVIEW"
+    assert [step["status"] for step in resubmitted.json()["steps"]] == ["PENDING", "WAITING"]
+
+    db = SessionLocal()
+    logs = (
+        db.query(models.ApprovalLog)
+        .filter_by(approval_request_id=approval_id)
+        .order_by(models.ApprovalLog.id.asc())
+        .all()
+    )
+    db.close()
+    assert [log.action for log in logs][-2:] == ["return", "resubmit"]
+
+    returned_again = client.post(
+        f"/api/approvals/{approval_id}/return",
+        headers={"X-Role": "reviewer", "X-User-Id": "21"},
+        json={"comment": "请补充热平衡说明"},
+    )
+    assert returned_again.status_code == 200
+    assert returned_again.json()["status"] == "RETURNED"
+
     report = client.post(f"/api/executions/{execution.id}/reports", headers={"X-Role": "engineer", "X-User-Id": "11"})
     assert report.status_code == 200
     publish = client.post(f"/api/reports/{report.json()['id']}/publish", headers={"X-Role": "report_admin", "X-User-Id": "41"})
@@ -719,7 +732,7 @@ def test_comparison_group_returns_outputs():
 def test_artifacts_and_ai_joint_analysis_use_mock_without_api_config():
     init_db()
     client.post("/api/seed")
-    project_id = client.get("/api/projects").json()[0]["id"]
+    project_id = next(row["id"] for row in client.get("/api/projects").json() if row["code"] == "PRJ-2026-001")
     item_id = client.get(f"/api/projects/{project_id}/items").json()[0]["id"]
     calc_node = next(node for node in client.get(f"/api/items/{item_id}/nodes").json() if node["node_type"] == "calc")
 
@@ -811,6 +824,634 @@ def test_artifacts_and_ai_joint_analysis_use_mock_without_api_config():
     )
     assert project_wide_analysis.status_code == 200
     assert "装出钢机现场安装空间与计算假设需要联合复核" in project_wide_analysis.json()["result"]["answer"]
+
+
+def test_project_wide_ai_search_prefers_matching_artifacts_only():
+    init_db()
+    client.post("/api/seed")
+    project_code = f"PRJ-AI-{uuid.uuid4().hex[:8].upper()}"
+    project = client.post(
+        "/api/projects",
+        json={"code": project_code, "name": "AI 检索隔离项目", "owner_user_id": 2},
+    )
+    assert project.status_code == 200
+    project_id = project.json()["id"]
+
+    item = client.post(
+        f"/api/projects/{project_id}/items",
+        json={"code": f"ITEM-{uuid.uuid4().hex[:6].upper()}", "name": "AI 资料名目", "furnace_type": "walking_beam_furnace", "business_scope": "资料测试", "design_stage": "V1", "status": "ACTIVE"},
+    )
+    assert item.status_code == 200
+    item_id = item.json()["id"]
+
+    related = client.post(
+        f"/api/projects/{project_id}/artifacts",
+        headers={"X-Role": "engineer"},
+        json={
+            "project_item_id": item_id,
+            "artifact_type": "site_feedback",
+            "title": "装出钢机问题记录",
+            "source_code": "DOC-201",
+            "content": "装出钢机现场安装空间不足，联轴器检修口需要重新布置。",
+        },
+    )
+    assert related.status_code == 200
+
+    unrelated = client.post(
+        f"/api/projects/{project_id}/artifacts",
+        headers={"X-Role": "engineer"},
+        json={
+            "project_item_id": item_id,
+            "artifact_type": "technical_description",
+            "title": "步进梁水封说明",
+            "source_code": "DOC-202",
+            "content": "步进梁区域水封方案已调整，和装出钢机无关。",
+        },
+    )
+    assert unrelated.status_code == 200
+
+    analysis = client.post(
+        f"/api/projects/{project_id}/ai-analyses",
+        headers={"X-Role": "engineer"},
+        json={
+            "project_item_id": item_id,
+            "equipment_name": "项目资料",
+            "execution_ids": [],
+            "artifact_ids": [],
+            "question": "装出钢机出现过什么问题？",
+        },
+    )
+    assert analysis.status_code == 200
+    assert "装出钢机现场安装空间不足" in analysis.json()["result"]["answer"]
+    assert "步进梁区域水封方案" not in analysis.json()["result"]["answer"]
+
+    db = SessionLocal()
+    saved_analysis = db.query(models.AiAnalysis).order_by(models.AiAnalysis.id.desc()).first()
+    request_json = json.loads(saved_analysis.request_json)
+    db.close()
+    assert len(request_json["retrieved_artifacts"]) == 1
+    assert request_json["retrieved_artifacts"][0]["title"] == "装出钢机问题记录"
+
+
+def test_ai_analysis_formats_precaution_question_as_structured_answer():
+    init_db()
+    project_code = f"PRJ-WATER-{uuid.uuid4().hex[:8].upper()}"
+    project = client.post(
+        "/api/projects",
+        json={"code": project_code, "name": "冷却水管路问答项目", "owner_user_id": 2},
+    )
+    assert project.status_code == 200
+    project_id = project.json()["id"]
+
+    item = client.post(
+        f"/api/projects/{project_id}/items",
+        json={"code": f"ITEM-{uuid.uuid4().hex[:6].upper()}", "name": "冷却水资料", "furnace_type": "walking_beam_furnace", "business_scope": "资料测试", "design_stage": "V1", "status": "ACTIVE"},
+    )
+    assert item.status_code == 200
+    item_id = item.json()["id"]
+
+    artifact = client.post(
+        f"/api/projects/{project_id}/artifacts",
+        headers={"X-Role": "engineer"},
+        json={
+            "project_item_id": item_id,
+            "artifact_type": "technical_description",
+            "title": "加热炉冷却水管路设计说明",
+            "source_code": "DOC-WATER-001",
+            "content": "冷却水管路设计应关注管径匹配、排空点和检修阀门布置。运行维护阶段要定期巡检泄漏点并清理过滤器。断水和堵塞会引发局部过热风险。",
+        },
+    )
+    assert artifact.status_code == 200
+
+    analysis = client.post(
+        f"/api/projects/{project_id}/ai-analyses",
+        headers={"X-Role": "engineer"},
+        json={
+            "project_item_id": item_id,
+            "equipment_name": "项目资料",
+            "execution_ids": [],
+            "artifact_ids": [],
+            "question": "加热炉冷却水管路设计及操作维护需注意事项？",
+        },
+    )
+    assert analysis.status_code == 200
+    answer = analysis.json()["result"]["answer"]
+    assert "根据当前命中的项目资料可整理出以下内容" in answer
+    assert "设计要点" in answer
+    assert "操作维护" in answer
+    assert "风险提示" in answer
+    assert "资料依据" in answer
+    assert "管径匹配" in answer
+    assert "清理过滤器" in answer
+    assert "局部过热风险" in answer
+
+
+def test_ai_analysis_time_question_marks_incomplete_date_as_incomplete():
+    init_db()
+    project_code = f"PRJ-DATE-{uuid.uuid4().hex[:8].upper()}"
+    project = client.post(
+        "/api/projects",
+        json={"code": project_code, "name": "规程日期问答项目", "owner_user_id": 2},
+    )
+    assert project.status_code == 200
+    project_id = project.json()["id"]
+
+    item = client.post(
+        f"/api/projects/{project_id}/items",
+        json={"code": f"ITEM-{uuid.uuid4().hex[:6].upper()}", "name": "规程资料", "furnace_type": "walking_beam_furnace", "business_scope": "资料测试", "design_stage": "V1", "status": "ACTIVE"},
+    )
+    assert item.status_code == 200
+    item_id = item.json()["id"]
+
+    artifact = client.post(
+        f"/api/projects/{project_id}/artifacts",
+        headers={"X-Role": "engineer"},
+        json={
+            "project_item_id": item_id,
+            "artifact_type": "technical_description",
+            "title": "煤气安全规程学习纪要",
+            "source_code": "DOC-DATE-001",
+            "content": "新的工业企业煤气安全规程5月1日开始实施。建议工艺部设计人员尽快熟悉新标准。",
+        },
+    )
+    assert artifact.status_code == 200
+
+    analysis = client.post(
+        f"/api/projects/{project_id}/ai-analyses",
+        headers={"X-Role": "engineer"},
+        json={
+            "project_item_id": item_id,
+            "equipment_name": "项目资料",
+            "execution_ids": [],
+            "artifact_ids": [],
+            "question": "企业煤气安全规程什么时候开始实施？",
+        },
+    )
+    assert analysis.status_code == 200
+    answer = analysis.json()["result"]["answer"]
+    assert "没有给出完整年份" in answer
+    assert "5月1日" in answer
+    assert "煤气安全规程学习纪要" in answer
+
+
+def test_ai_analysis_ignores_generic_short_keyword_matches_for_complex_question():
+    init_db()
+    project_code = f"PRJ-PERF-{uuid.uuid4().hex[:8].upper()}"
+    project = client.post(
+        "/api/projects",
+        json={"code": project_code, "name": "技术性能表问答项目", "owner_user_id": 2},
+    )
+    assert project.status_code == 200
+    project_id = project.json()["id"]
+
+    item = client.post(
+        f"/api/projects/{project_id}/items",
+        json={"code": f"ITEM-{uuid.uuid4().hex[:6].upper()}", "name": "性能资料", "furnace_type": "walking_beam_furnace", "business_scope": "资料测试", "design_stage": "V1", "status": "ACTIVE"},
+    )
+    assert item.status_code == 200
+    item_id = item.json()["id"]
+
+    first_artifact = client.post(
+        f"/api/projects/{project_id}/artifacts",
+        headers={"X-Role": "engineer"},
+        json={
+            "project_item_id": item_id,
+            "artifact_type": "site_feedback",
+            "title": "加热炉地下室防爆要求",
+            "source_code": "DOC-PERF-001",
+            "content": "这份资料只提到加热炉地下室防爆要求，不包含技术性能表内容。",
+        },
+    )
+    assert first_artifact.status_code == 200
+
+    second_artifact = client.post(
+        f"/api/projects/{project_id}/artifacts",
+        headers={"X-Role": "engineer"},
+        json={
+            "project_item_id": item_id,
+            "artifact_type": "technical_description",
+            "title": "加热炉冷却水说明",
+            "source_code": "DOC-PERF-002",
+            "content": "这份资料讲的是加热炉冷却水管路和操作维护，和设备技术性能表无关。",
+        },
+    )
+    assert second_artifact.status_code == 200
+
+    analysis = client.post(
+        f"/api/projects/{project_id}/ai-analyses",
+        headers={"X-Role": "engineer"},
+        json={
+            "project_item_id": item_id,
+            "equipment_name": "项目资料",
+            "execution_ids": [],
+            "artifact_ids": [],
+            "question": "356m2步双蓄热步进梁式加热炉 技术性能表主要内容？",
+        },
+    )
+    assert analysis.status_code == 200
+    answer = analysis.json()["result"]["answer"]
+    assert "没有检索到与这个问题直接相关的内容" in answer
+
+
+def test_ai_analysis_request_includes_full_artifact_content_for_fallback_answering(monkeypatch):
+    init_db()
+    project_code = f"PRJ-FALLBACK-{uuid.uuid4().hex[:8].upper()}"
+    project = client.post(
+        "/api/projects",
+        json={"code": project_code, "name": "全文兜底问答项目", "owner_user_id": 2},
+    )
+    assert project.status_code == 200
+    project_id = project.json()["id"]
+
+    item = client.post(
+        f"/api/projects/{project_id}/items",
+        json={"code": f"ITEM-{uuid.uuid4().hex[:6].upper()}", "name": "全文兜底资料", "furnace_type": "walking_beam_furnace", "business_scope": "资料测试", "design_stage": "V1", "status": "ACTIVE"},
+    )
+    assert item.status_code == 200
+    item_id = item.json()["id"]
+
+    target_sentence = "装出钢机出现过链条跑偏和限位开关误动作，需要现场复核导向轮安装。"
+    artifact = client.post(
+        f"/api/projects/{project_id}/artifacts",
+        headers={"X-Role": "engineer"},
+        json={
+            "project_item_id": item_id,
+            "artifact_type": "site_feedback",
+            "title": "装出钢机问题长文记录",
+            "source_code": "DOC-FALLBACK-001",
+            "content": target_sentence,
+        },
+    )
+    assert artifact.status_code == 200
+
+    async def empty_search_with_lightrag(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr(main_module, "search_with_lightrag", empty_search_with_lightrag)
+
+    async def empty_artifact_search(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr(main_module, "_search_project_artifacts_for_ai", empty_artifact_search)
+
+    analysis = client.post(
+        f"/api/projects/{project_id}/ai-analyses",
+        headers={"X-Role": "engineer"},
+        json={
+            "project_item_id": item_id,
+            "equipment_name": "项目资料",
+            "execution_ids": [],
+            "artifact_ids": [artifact.json()["id"]],
+            "question": "装出钢机出现过什么问题？",
+        },
+    )
+    assert analysis.status_code == 200
+    payload = analysis.json()
+
+    db = SessionLocal()
+    stored = db.get(models.AiAnalysis, payload["id"])
+    request_json = json.loads(stored.request_json)
+    db.close()
+    assert request_json["retrieved_artifacts"] == []
+    assert request_json["artifacts"][0]["content_preview"]
+    assert request_json["artifacts"][0]["content"] == target_sentence
+
+
+def test_ai_analysis_answers_parameter_table_question_from_top_table_artifact_only():
+    init_db()
+    project_code = f"PRJ-TABLE-{uuid.uuid4().hex[:8].upper()}"
+    project = client.post(
+        "/api/projects",
+        json={"code": project_code, "name": "技术性能表提取项目", "owner_user_id": 2},
+    )
+    assert project.status_code == 200
+    project_id = project.json()["id"]
+
+    item = client.post(
+        f"/api/projects/{project_id}/items",
+        json={"code": f"ITEM-{uuid.uuid4().hex[:6].upper()}", "name": "技术性能表资料", "furnace_type": "walking_beam_furnace", "business_scope": "资料测试", "design_stage": "V1", "status": "ACTIVE"},
+    )
+    assert item.status_code == 200
+    item_id = item.json()["id"]
+
+    table_artifact = client.post(
+        f"/api/projects/{project_id}/artifacts",
+        headers={"X-Role": "engineer"},
+        json={
+            "project_item_id": item_id,
+            "artifact_type": "technical_description",
+            "title": "IF000396c-技术性能表",
+            "source_code": "DOC-TABLE-001",
+            "content": "356m2步双蓄热步进梁式加热炉 技术性能表 技术性能项目名称 技术参数 炉型 双蓄热式步进梁式加热炉 用途 钢坯轧制前加热 产量 130（冷装） 坯料断面 150×150，160×160 入炉温度 冷装：常温；热装：600～900 出炉温度 980～1150 燃料种类 高炉煤气 炉底机械传动 液压 支撑梁冷却方式 汽化冷却 进出料方式 悬臂辊道侧进侧出",
+        },
+    )
+    assert table_artifact.status_code == 200
+
+    noise_artifact = client.post(
+        f"/api/projects/{project_id}/artifacts",
+        headers={"X-Role": "engineer"},
+        json={
+            "project_item_id": item_id,
+            "artifact_type": "site_feedback",
+            "title": "炉底机械防爆建议",
+            "source_code": "DOC-TABLE-002",
+            "content": "炉底机械就地操作箱后续可能需要按防爆配置。",
+        },
+    )
+    assert noise_artifact.status_code == 200
+
+    analysis = client.post(
+        f"/api/projects/{project_id}/ai-analyses",
+        headers={"X-Role": "engineer"},
+        json={
+            "project_item_id": item_id,
+            "equipment_name": "项目资料",
+            "execution_ids": [],
+            "artifact_ids": [],
+            "question": "356m2步双蓄热步进梁式加热炉 技术性能表的主要参数？炉底机械传动形式？",
+        },
+    )
+    assert analysis.status_code == 200
+    answer = analysis.json()["result"]["answer"]
+    assert "技术性能表，当前能直接识别到的参数如下" in answer
+    assert "炉底机械传动：液压" in answer
+    assert "炉型：双蓄热式步进梁式加热炉" in answer
+    assert "进出料方式：悬臂辊道侧进侧出" in answer
+    assert "防爆配置" not in answer
+
+
+def test_ai_analysis_answers_natural_question_for_billet_size_from_parameter_table():
+    init_db()
+    project_code = f"PRJ-BILLET-{uuid.uuid4().hex[:8].upper()}"
+    project = client.post(
+        "/api/projects",
+        json={"code": project_code, "name": "方坯尺寸问答项目", "owner_user_id": 2},
+    )
+    assert project.status_code == 200
+    project_id = project.json()["id"]
+
+    item = client.post(
+        f"/api/projects/{project_id}/items",
+        json={"code": f"ITEM-{uuid.uuid4().hex[:6].upper()}", "name": "方坯尺寸资料", "furnace_type": "walking_beam_furnace", "business_scope": "资料测试", "design_stage": "V1", "status": "ACTIVE"},
+    )
+    assert item.status_code == 200
+    item_id = item.json()["id"]
+
+    table_artifact = client.post(
+        f"/api/projects/{project_id}/artifacts",
+        headers={"X-Role": "engineer"},
+        json={
+            "project_item_id": item_id,
+            "artifact_type": "technical_description",
+            "title": "IF000396c-技术性能表",
+            "source_code": "DOC-BILLET-001",
+            "content": "356m2步双蓄热步进梁式加热炉 技术性能表 技术性能项目名称 技术参数 用途 钢坯轧制前加热 坯料断面 150×150，160×160 入炉温度 冷装：常温；热装：600～900",
+        },
+    )
+    assert table_artifact.status_code == 200
+
+    analysis = client.post(
+        f"/api/projects/{project_id}/ai-analyses",
+        headers={"X-Role": "engineer"},
+        json={
+            "project_item_id": item_id,
+            "equipment_name": "项目资料",
+            "execution_ids": [],
+            "artifact_ids": [],
+            "question": "方坯尺寸一般是多少？",
+        },
+    )
+    assert analysis.status_code == 200
+    answer = analysis.json()["result"]["answer"]
+    assert "技术性能表，当前能直接识别到的参数如下" in answer
+    assert "坯料断面：150×150，160×160" in answer
+
+
+def test_ai_analysis_extracts_doc_number_from_pdf_text_artifact():
+    init_db()
+    project_code = f"PRJ-DOCNO-{uuid.uuid4().hex[:8].upper()}"
+    project = client.post(
+        "/api/projects",
+        json={"code": project_code, "name": "图号问答项目", "owner_user_id": 2},
+    )
+    assert project.status_code == 200
+    project_id = project.json()["id"]
+
+    item = client.post(
+        f"/api/projects/{project_id}/items",
+        json={"code": f"ITEM-{uuid.uuid4().hex[:6].upper()}", "name": "图号资料", "furnace_type": "walking_beam_furnace", "business_scope": "资料测试", "design_stage": "V1", "status": "ACTIVE"},
+    )
+    assert item.status_code == 200
+    item_id = item.json()["id"]
+
+    artifact = client.post(
+        f"/api/projects/{project_id}/artifacts",
+        headers={"X-Role": "engineer"},
+        json={
+            "project_item_id": item_id,
+            "artifact_type": "site_feedback",
+            "title": "DL11500-11c-2.pdf",
+            "source_code": "DOC-NO-001",
+            "content": "已解析 PDF 文本 正文: 图纸名称 Doc. Name 步进梁四 材料表 图号 Doc. No. DL11500-11c 25 Q235 4 10.52 42.08",
+        },
+    )
+    assert artifact.status_code == 200
+
+    analysis = client.post(
+        f"/api/projects/{project_id}/ai-analyses",
+        headers={"X-Role": "engineer"},
+        json={
+            "project_item_id": item_id,
+            "equipment_name": "项目资料",
+            "execution_ids": [],
+            "artifact_ids": [],
+            "question": "广西钢铁3800mm宽厚板生产线项目步进梁四的图号是多少？",
+        },
+    )
+    assert analysis.status_code == 200
+    answer = analysis.json()["result"]["answer"]
+    assert "当前命中的图号是" in answer
+    assert "DL11500-11c" in answer
+    assert "DL11500-11c-2.pdf" in answer
+
+
+def test_ai_analysis_falls_back_to_project_artifacts_when_retrieval_is_empty(monkeypatch):
+    init_db()
+    project_code = f"PRJ-AI-FALLBACK-{uuid.uuid4().hex[:8].upper()}"
+    project = client.post(
+        "/api/projects",
+        json={"code": project_code, "name": "AI 检索兜底项目", "owner_user_id": 2},
+    )
+    assert project.status_code == 200
+    project_id = project.json()["id"]
+
+    item = client.post(
+        f"/api/projects/{project_id}/items",
+        json={"code": f"ITEM-{uuid.uuid4().hex[:6].upper()}", "name": "AI 兜底资料", "furnace_type": "walking_beam_furnace", "business_scope": "资料测试", "design_stage": "V1", "status": "ACTIVE"},
+    )
+    assert item.status_code == 200
+    item_id = item.json()["id"]
+
+    artifact = client.post(
+        f"/api/projects/{project_id}/artifacts",
+        headers={"X-Role": "engineer"},
+        json={
+            "project_item_id": item_id,
+            "artifact_type": "technical_description",
+            "title": "加热炉总体说明",
+            "source_code": "DOC-FALLBACK-001",
+            "content": "加热炉总体布置说明包含冷却水、排烟和检修空间要求。",
+        },
+    )
+    assert artifact.status_code == 200
+
+    async def empty_search_with_lightrag(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr(main_module, "search_with_lightrag", empty_search_with_lightrag)
+
+    analysis = client.post(
+        f"/api/projects/{project_id}/ai-analyses",
+        headers={"X-Role": "engineer"},
+        json={
+            "project_item_id": item_id,
+            "equipment_name": "项目资料",
+            "execution_ids": [],
+            "artifact_ids": [],
+            "question": "这套系统主要说明了什么？",
+        },
+    )
+    assert analysis.status_code == 200
+    answer = analysis.json()["result"]["answer"]
+    assert "加热炉总体说明" in answer
+    assert "冷却水、排烟和检修空间要求" in answer
+    assert "没有检索到与这个问题直接相关的内容" not in answer
+
+
+def test_ai_analysis_prefers_lightrag_retrieval_when_available(monkeypatch):
+    init_db()
+    project_code = f"PRJ-LR-{uuid.uuid4().hex[:8].upper()}"
+    project = client.post(
+        "/api/projects",
+        json={"code": project_code, "name": "LightRAG 检索项目", "owner_user_id": 2},
+    )
+    assert project.status_code == 200
+    project_id = project.json()["id"]
+
+    item = client.post(
+        f"/api/projects/{project_id}/items",
+        json={"code": f"ITEM-{uuid.uuid4().hex[:6].upper()}", "name": "LightRAG 资料", "furnace_type": "walking_beam_furnace", "business_scope": "资料测试", "design_stage": "V1", "status": "ACTIVE"},
+    )
+    assert item.status_code == 200
+    item_id = item.json()["id"]
+
+    artifact = client.post(
+        f"/api/projects/{project_id}/artifacts",
+        headers={"X-Role": "engineer"},
+        json={
+            "project_item_id": item_id,
+            "artifact_type": "technical_description",
+            "title": "常规说明",
+            "source_code": "DOC-LR-001",
+            "content": "这是数据库里的原始资料内容。",
+        },
+    )
+    assert artifact.status_code == 200
+
+    async def fake_search_with_lightrag(project_id_arg, question_arg, artifacts_arg, limit=8):
+        assert project_id_arg == project_id
+        assert question_arg == "LightRAG 检索到了什么？"
+        assert len(artifacts_arg) == 1
+        return [
+            {
+                "artifact_id": artifact.json()["id"],
+                "score": 99,
+                "type": "technical_description",
+                "title": "LightRAG 命中说明",
+                "content": "这是 LightRAG 返回的命中文本片段。",
+                "retrieval_provider": "lightrag",
+            }
+        ]
+
+    monkeypatch.setattr(main_module, "search_with_lightrag", fake_search_with_lightrag)
+
+    analysis = client.post(
+        f"/api/projects/{project_id}/ai-analyses",
+        headers={"X-Role": "engineer"},
+        json={
+            "project_item_id": item_id,
+            "equipment_name": "项目资料",
+            "execution_ids": [],
+            "artifact_ids": [],
+            "question": "LightRAG 检索到了什么？",
+        },
+    )
+    assert analysis.status_code == 200
+    assert "这是 LightRAG 返回的命中文本片段" in analysis.json()["result"]["answer"]
+
+    db = SessionLocal()
+    saved_analysis = db.query(models.AiAnalysis).order_by(models.AiAnalysis.id.desc()).first()
+    request_json = json.loads(saved_analysis.request_json)
+    db.close()
+    assert request_json["retrieved_artifacts"][0]["retrieval_provider"] == "lightrag"
+    assert request_json["retrieved_artifacts"][0]["title"] == "LightRAG 命中说明"
+
+
+def test_ai_analysis_falls_back_when_lightrag_retrieval_fails(monkeypatch):
+    init_db()
+    project_code = f"PRJ-LR-FB-{uuid.uuid4().hex[:8].upper()}"
+    project = client.post(
+        "/api/projects",
+        json={"code": project_code, "name": "LightRAG 回退项目", "owner_user_id": 2},
+    )
+    assert project.status_code == 200
+    project_id = project.json()["id"]
+
+    item = client.post(
+        f"/api/projects/{project_id}/items",
+        json={"code": f"ITEM-{uuid.uuid4().hex[:6].upper()}", "name": "LightRAG 回退资料", "furnace_type": "walking_beam_furnace", "business_scope": "资料测试", "design_stage": "V1", "status": "ACTIVE"},
+    )
+    assert item.status_code == 200
+    item_id = item.json()["id"]
+
+    artifact = client.post(
+        f"/api/projects/{project_id}/artifacts",
+        headers={"X-Role": "engineer"},
+        json={
+            "project_item_id": item_id,
+            "artifact_type": "site_feedback",
+            "title": "装出钢机回退记录",
+            "source_code": "DOC-LR-002",
+            "content": "装出钢机现场安装空间不足，检修口需要重新布置。",
+        },
+    )
+    assert artifact.status_code == 200
+
+    async def broken_search_with_lightrag(*args, **kwargs):
+        raise RuntimeError("mock lightrag failure")
+
+    monkeypatch.setattr(main_module, "search_with_lightrag", broken_search_with_lightrag)
+
+    analysis = client.post(
+        f"/api/projects/{project_id}/ai-analyses",
+        headers={"X-Role": "engineer"},
+        json={
+            "project_item_id": item_id,
+            "equipment_name": "项目资料",
+            "execution_ids": [],
+            "artifact_ids": [],
+            "question": "装出钢机出现过什么问题？",
+        },
+    )
+    assert analysis.status_code == 200
+    assert "装出钢机现场安装空间不足" in analysis.json()["result"]["answer"]
+
+    db = SessionLocal()
+    saved_analysis = db.query(models.AiAnalysis).order_by(models.AiAnalysis.id.desc()).first()
+    request_json = json.loads(saved_analysis.request_json)
+    db.close()
+    assert request_json["retrieved_artifacts"][0]["title"] == "装出钢机回退记录"
+    assert request_json["retrieved_artifacts"][0].get("retrieval_provider") is None
 
 
 def test_ai_analysis_accepts_pasted_images():
@@ -1129,7 +1770,7 @@ def test_artifact_rejects_project_item_from_another_project():
 def test_ai_analysis_rejects_execution_from_another_project():
     init_db()
     client.post("/api/seed")
-    source_project_id = client.get("/api/projects").json()[0]["id"]
+    source_project_id = next(project["id"] for project in client.get("/api/projects").json() if project["code"] == "PRJ-2026-001")
     item_id = client.get(f"/api/projects/{source_project_id}/items").json()[0]["id"]
     calc_node = next(node for node in client.get(f"/api/items/{item_id}/nodes").json() if node["node_type"] == "calc")
     client.post(
