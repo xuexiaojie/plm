@@ -115,7 +115,9 @@ def test_index_page_loads_console():
         "计算管理",
         "审批报告",
         "数字孪生",
-        "AI问答",
+        "流程分析",
+        "AI 查询",
+        "AI 智能分析",
         "权限分配",
         "调试信息",
     ]
@@ -130,6 +132,11 @@ def test_index_page_loads_console():
         "expectedAiProviders",
         "normalizedAiResponses",
         "renderAiErrorMeta",
+        "setAiViewMode",
+        "renderFlowAnalysis",
+        "能量流分析",
+        "信息流分析",
+        "质量流分析",
         "错误码：",
         "错误信息：",
         "ok-fill",
@@ -139,9 +146,10 @@ def test_index_page_loads_console():
         assert marker in text
 
 
-def test_run_joint_analysis_returns_local_response_array_when_no_provider(monkeypatch):
-    monkeypatch.setattr(runtime_config_module, "WORKSPACE_TMP_DIR", PROJECT_ROOT / "tests" / "_missing_tmp_dir")
-    for key in ("AI_API_URL", "AI_API_KEY", "AI_MODEL", "CLAUDE_API_KEY", "CLAUDE_MODEL", "TENCENT_API_KEY", "TENCENT_MODEL", "TENCENT_SECRET_ID", "TENCENT_SECRET_KEY"):
+def test_run_joint_analysis_returns_local_response_array_when_no_provider(tmp_path, monkeypatch):
+    monkeypatch.setattr(runtime_config_module, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(runtime_config_module, "WORKSPACE_TMP_DIR", tmp_path / "_missing_tmp_dir")
+    for key in runtime_config_module.AI_ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
 
     result = asyncio.run(ai_client_module.run_joint_analysis(json.dumps({"question": "测试", "retrieved_artifacts": [], "artifacts": []}, ensure_ascii=False)))
@@ -149,11 +157,14 @@ def test_run_joint_analysis_returns_local_response_array_when_no_provider(monkey
     assert result["provider"] == "本地规则"
     assert len(result["responses"]) == 1
     assert result["responses"][0]["provider"] == "本地规则"
+    assert result["fallback_reason"] == "no_provider_configured"
+    assert result["diagnostics"]["configured_provider_count"] == 0
 
 
-def test_run_joint_analysis_returns_hint_when_local_fallback_mode_is_hint(monkeypatch):
-    monkeypatch.setattr(runtime_config_module, "WORKSPACE_TMP_DIR", PROJECT_ROOT / "tests" / "_missing_tmp_dir")
-    for key in ("AI_API_URL", "AI_API_KEY", "AI_MODEL", "CLAUDE_API_KEY", "CLAUDE_MODEL", "TENCENT_API_KEY", "TENCENT_MODEL", "TENCENT_SECRET_ID", "TENCENT_SECRET_KEY"):
+def test_run_joint_analysis_returns_hint_when_local_fallback_mode_is_hint(tmp_path, monkeypatch):
+    monkeypatch.setattr(runtime_config_module, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(runtime_config_module, "WORKSPACE_TMP_DIR", tmp_path / "_missing_tmp_dir")
+    for key in runtime_config_module.AI_ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("LOCAL_RULE_FALLBACK_MODE", "hint")
 
@@ -163,19 +174,23 @@ def test_run_joint_analysis_returns_hint_when_local_fallback_mode_is_hint(monkey
     assert "当前 AI 服务未配置或不可用" in result["answer"]
 
 
-def test_run_joint_analysis_returns_parallel_multi_model_responses(monkeypatch):
-    monkeypatch.setattr(runtime_config_module, "WORKSPACE_TMP_DIR", PROJECT_ROOT / "tests" / "_missing_tmp_dir")
+def test_run_joint_analysis_runs_volc_then_deepseek_review(tmp_path, monkeypatch):
+    monkeypatch.setattr(runtime_config_module, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(runtime_config_module, "WORKSPACE_TMP_DIR", tmp_path / "_missing_tmp_dir")
+    for key in runtime_config_module.AI_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("AI_API_URL", "https://deepseek.example/v1/chat/completions")
     monkeypatch.setenv("AI_API_KEY", "deepseek-key")
     monkeypatch.setenv("AI_MODEL", "deepseek-chat")
-    monkeypatch.setenv("CLAUDE_API_URL", "https://claude.example/v1/messages")
+    monkeypatch.setenv("CLAUDE_API_URL", "https://zhipu.example/v4/chat/completions")
     monkeypatch.setenv("CLAUDE_API_KEY", "claude-key")
-    monkeypatch.setenv("CLAUDE_MODEL", "claude-3-5-sonnet")
-    monkeypatch.delenv("TENCENT_API_URL", raising=False)
-    monkeypatch.delenv("TENCENT_API_KEY", raising=False)
-    monkeypatch.delenv("TENCENT_MODEL", raising=False)
-    monkeypatch.delenv("TENCENT_SECRET_ID", raising=False)
-    monkeypatch.delenv("TENCENT_SECRET_KEY", raising=False)
+    monkeypatch.setenv("CLAUDE_MODEL", "glm-4.6")
+    monkeypatch.setenv("CLAUDE_PROVIDER_NAME", "智谱清言")
+    monkeypatch.setenv("CLAUDE_API_TYPE", "openai")
+    monkeypatch.setenv("TENCENT_API_URL", "https://volc.example/api/v3/chat/completions")
+    monkeypatch.setenv("TENCENT_API_KEY", "volc-key")
+    monkeypatch.setenv("TENCENT_MODEL", "doubao-seed-1-6-251015")
+    monkeypatch.setenv("TENCENT_PROVIDER_NAME", "火山大模型")
 
     class FakeResponse:
         def __init__(self, payload):
@@ -198,31 +213,355 @@ def test_run_joint_analysis_returns_parallel_multi_model_responses(monkeypatch):
             return False
 
         async def post(self, url, json=None, headers=None):
-            if "claude.example" in url:
-                return FakeResponse({"content": [{"type": "text", "text": "Claude 回答"}]})
-            return FakeResponse({"choices": [{"message": {"content": "DeepSeek 回答"}}]})
+            prompt = json["messages"][-1]["content"]
+            if "volc.example" in url:
+                return FakeResponse({"choices": [{"message": {"content": "654㎡步进梁式加热炉支撑梁图号为 IF100024-01。"}}]})
+            if "deepseek.example" in url:
+                assert "draft_answer" in prompt
+                return FakeResponse({"choices": [{"message": {"content": "654㎡步进梁式加热炉支撑梁图号为 IF100024-01，356m2步双蓄热步进梁式加热炉出炉温度为 980～1150℃。"}}]})
+            if "zhipu.example" in url:
+                return FakeResponse({"choices": [{"message": {"content": "智谱补充回答"}}]})
+            raise AssertionError(f"unexpected url: {url}")
 
     monkeypatch.setattr(ai_client_module.httpx, "AsyncClient", FakeAsyncClient)
 
-    result = asyncio.run(ai_client_module.run_joint_analysis("测试 prompt"))
+    result = asyncio.run(ai_client_module.run_joint_analysis(json.dumps({"question": "654㎡步进梁式加热炉支撑梁图号是多少？356m2步双蓄热步进梁式加热炉的出炉温度是多少？", "retrieved_artifacts": [], "artifacts": []}, ensure_ascii=False)))
 
-    assert result["provider"] == "multi"
-    assert result["answer"] == "DeepSeek 回答"
+    assert result["provider"] == "火山大模型+DeepSeek"
+    assert result["answer"].startswith("联合结论（火山大模型初判，DeepSeek复核）：")
+    assert "980～1150℃" in result["answer"]
     assert len(result["responses"]) == 2
-    assert result["responses"][0]["provider"] == "DeepSeek"
-    assert result["responses"][1]["provider"] == "Claude"
+    assert result["responses"][0]["provider"] == "火山大模型"
+    assert result["responses"][0]["workflow_role"] == "primary_search"
+    assert result["responses"][1]["provider"] == "DeepSeek"
+    assert result["responses"][1]["workflow_role"] == "reviewer"
+    assert result["diagnostics"]["configured_provider_count"] == 3
+    assert result["diagnostics"]["workflow_provider_order"] == ["火山大模型", "DeepSeek", "智谱清言"]
+    assert result["fallback_reason"] == "search_1_review_1_success"
 
 
-def test_run_joint_analysis_falls_back_to_local_when_remote_models_fail(monkeypatch):
-    monkeypatch.setattr(runtime_config_module, "WORKSPACE_TMP_DIR", PROJECT_ROOT / "tests" / "_missing_tmp_dir")
+def test_run_joint_analysis_returns_no_hit_when_deepseek_and_zhipu_both_miss(tmp_path, monkeypatch):
+    monkeypatch.setattr(runtime_config_module, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(runtime_config_module, "WORKSPACE_TMP_DIR", tmp_path / "_missing_tmp_dir")
+    for key in runtime_config_module.AI_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("AI_API_URL", "https://deepseek.example/v1/chat/completions")
     monkeypatch.setenv("AI_API_KEY", "deepseek-key")
     monkeypatch.setenv("AI_MODEL", "deepseek-chat")
-    monkeypatch.delenv("CLAUDE_API_KEY", raising=False)
-    monkeypatch.delenv("TENCENT_API_KEY", raising=False)
-    monkeypatch.delenv("TENCENT_MODEL", raising=False)
-    monkeypatch.delenv("TENCENT_SECRET_ID", raising=False)
-    monkeypatch.delenv("TENCENT_SECRET_KEY", raising=False)
+    monkeypatch.setenv("CLAUDE_API_URL", "https://zhipu.example/v4/chat/completions")
+    monkeypatch.setenv("CLAUDE_API_KEY", "zhipu-key")
+    monkeypatch.setenv("CLAUDE_MODEL", "glm-4.6")
+    monkeypatch.setenv("CLAUDE_PROVIDER_NAME", "智谱清言")
+    monkeypatch.setenv("CLAUDE_API_TYPE", "openai")
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, json=None, headers=None):
+            return FakeResponse({"choices": [{"message": {"content": "资料中未找到相关内容。"}}]})
+
+    monkeypatch.setattr(ai_client_module.httpx, "AsyncClient", FakeAsyncClient)
+
+    prompt = json.dumps(
+        {
+            "question": "356m2步双蓄热步进梁式加热炉的出炉温度是多少？",
+            "retrieved_artifacts": [
+                {
+                    "type_name": "技术说明",
+                    "title": "IF000396c-技术性能表",
+                    "content": "技术性能表 炉型 356m2步双蓄热步进梁式加热炉 出炉温度 980～1150℃ 燃料种类 高炉煤气",
+                }
+            ],
+            "artifacts": [],
+        },
+        ensure_ascii=False,
+    )
+
+    result = asyncio.run(ai_client_module.run_joint_analysis(prompt))
+
+    assert result["provider"] == "DeepSeek+智谱清言"
+    assert result["answer"] == "资料中未找到相关内容。"
+    assert result["fallback_reason"] == "ordered_no_hit"
+
+
+def test_run_joint_analysis_uses_zhipu_as_secondary_search_then_deepseek_review(tmp_path, monkeypatch):
+    monkeypatch.setattr(runtime_config_module, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(runtime_config_module, "WORKSPACE_TMP_DIR", tmp_path / "_missing_tmp_dir")
+    for key in runtime_config_module.AI_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("AI_API_URL", "https://deepseek.example/v1/chat/completions")
+    monkeypatch.setenv("AI_API_KEY", "deepseek-key")
+    monkeypatch.setenv("AI_MODEL", "deepseek-chat")
+    monkeypatch.setenv("CLAUDE_API_URL", "https://zhipu.example/v4/chat/completions")
+    monkeypatch.setenv("CLAUDE_API_KEY", "zhipu-key")
+    monkeypatch.setenv("CLAUDE_MODEL", "glm-4.6")
+    monkeypatch.setenv("CLAUDE_PROVIDER_NAME", "智谱清言")
+    monkeypatch.setenv("CLAUDE_API_TYPE", "openai")
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, json=None, headers=None):
+            prompt = json["messages"][-1]["content"]
+            if "zhipu.example" in url:
+                return FakeResponse({"choices": [{"message": {"content": "356m2步双蓄热步进梁式加热炉的出炉温度为 980～1150℃。"}}]})
+            if "draft_answer" in prompt:
+                return FakeResponse({"choices": [{"message": {"content": "356m2步双蓄热步进梁式加热炉的出炉温度为 980～1150℃，资料来源为 IF000396c-技术性能表。"}}]})
+            return FakeResponse({"choices": [{"message": {"content": "资料中未找到相关内容。"}}]})
+
+    monkeypatch.setattr(ai_client_module.httpx, "AsyncClient", FakeAsyncClient)
+
+    prompt = json.dumps(
+        {
+            "question": "356m2步双蓄热步进梁式加热炉的出炉温度是多少？",
+            "retrieved_artifacts": [
+                {
+                    "type_name": "技术说明",
+                    "title": "IF000396c-技术性能表",
+                    "content": "技术性能表 炉型 356m2步双蓄热步进梁式加热炉 出炉温度 980～1150℃",
+                }
+            ],
+            "artifacts": [],
+        },
+        ensure_ascii=False,
+    )
+
+    result = asyncio.run(ai_client_module.run_joint_analysis(prompt))
+
+    assert result["provider"] == "智谱清言+DeepSeek"
+    assert result["answer"].startswith("联合结论（智谱清言初判，DeepSeek复核）：")
+    assert "980～1150℃" in result["answer"]
+    assert result["fallback_reason"] == "search_2_review_1_success"
+
+
+def test_run_joint_analysis_uses_zhipu_as_fallback_reviewer_after_deepseek_review_is_weak(tmp_path, monkeypatch):
+    monkeypatch.setattr(runtime_config_module, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(runtime_config_module, "WORKSPACE_TMP_DIR", tmp_path / "_missing_tmp_dir")
+    for key in runtime_config_module.AI_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("AI_API_URL", "https://deepseek.example/v1/chat/completions")
+    monkeypatch.setenv("AI_API_KEY", "deepseek-key")
+    monkeypatch.setenv("AI_MODEL", "deepseek-chat")
+    monkeypatch.setenv("CLAUDE_API_URL", "https://zhipu.example/v4/chat/completions")
+    monkeypatch.setenv("CLAUDE_API_KEY", "zhipu-key")
+    monkeypatch.setenv("CLAUDE_MODEL", "glm-4.6")
+    monkeypatch.setenv("CLAUDE_PROVIDER_NAME", "智谱清言")
+    monkeypatch.setenv("CLAUDE_API_TYPE", "openai")
+    monkeypatch.setenv("TENCENT_API_URL", "https://volc.example/api/v3/chat/completions")
+    monkeypatch.setenv("TENCENT_API_KEY", "volc-key")
+    monkeypatch.setenv("TENCENT_MODEL", "doubao-seed-1-6-251015")
+    monkeypatch.setenv("TENCENT_PROVIDER_NAME", "火山大模型")
+    monkeypatch.setenv("AI_SYNC_REVIEWERS", "2")
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, json=None, headers=None):
+            prompt = json["messages"][-1]["content"]
+            if "volc.example" in url:
+                return FakeResponse({"choices": [{"message": {"content": "654㎡步进梁式加热炉支撑梁图号为 IF100024-01。"}}]})
+            if "deepseek.example" in url:
+                assert "draft_answer" in prompt
+                return FakeResponse({"choices": [{"message": {"content": "资料中未找到相关内容。"}}]})
+            if "zhipu.example" in url:
+                assert "draft_answer" in prompt
+                return FakeResponse({"choices": [{"message": {"content": "654㎡步进梁式加热炉支撑梁图号为 IF100024-01，356m2步双蓄热步进梁式加热炉出炉温度为 980～1150℃。"}}]})
+            raise AssertionError(f"unexpected url: {url}")
+
+    monkeypatch.setattr(ai_client_module.httpx, "AsyncClient", FakeAsyncClient)
+
+    result = asyncio.run(ai_client_module.run_joint_analysis(json.dumps({"question": "654㎡步进梁式加热炉支撑梁图号是多少？356m2步双蓄热步进梁式加热炉的出炉温度是多少？", "retrieved_artifacts": [], "artifacts": []}, ensure_ascii=False)))
+
+    assert result["provider"] == "火山大模型+智谱清言"
+    assert result["answer"].startswith("联合结论（火山大模型初判，智谱清言复核）：")
+    assert result["fallback_reason"] == "search_1_review_2_success"
+    assert len(result["responses"]) == 3
+    assert result["responses"][1]["provider"] == "DeepSeek"
+    assert result["responses"][1]["workflow_role"] == "reviewer"
+    assert result["responses"][2]["provider"] == "智谱清言"
+    assert result["responses"][2]["workflow_role"] == "fallback_reviewer"
+
+
+def test_run_joint_analysis_returns_after_first_sync_reviewer_by_default(tmp_path, monkeypatch):
+    monkeypatch.setattr(runtime_config_module, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(runtime_config_module, "WORKSPACE_TMP_DIR", tmp_path / "_missing_tmp_dir")
+    for key in runtime_config_module.AI_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("AI_API_URL", "https://deepseek.example/v1/chat/completions")
+    monkeypatch.setenv("AI_API_KEY", "deepseek-key")
+    monkeypatch.setenv("AI_MODEL", "deepseek-chat")
+    monkeypatch.setenv("CLAUDE_API_URL", "https://zhipu.example/v4/chat/completions")
+    monkeypatch.setenv("CLAUDE_API_KEY", "zhipu-key")
+    monkeypatch.setenv("CLAUDE_MODEL", "glm-4.6")
+    monkeypatch.setenv("CLAUDE_PROVIDER_NAME", "智谱清言")
+    monkeypatch.setenv("CLAUDE_API_TYPE", "openai")
+    monkeypatch.setenv("TENCENT_API_URL", "https://volc.example/api/v3/chat/completions")
+    monkeypatch.setenv("TENCENT_API_KEY", "volc-key")
+    monkeypatch.setenv("TENCENT_MODEL", "doubao-seed-1-6-251015")
+    monkeypatch.setenv("TENCENT_PROVIDER_NAME", "火山大模型")
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, json=None, headers=None):
+            prompt = json["messages"][-1]["content"]
+            if "volc.example" in url:
+                return FakeResponse({"choices": [{"message": {"content": "654㎡步进梁式加热炉支撑梁图号为 IF100024-01。"}}]})
+            if "deepseek.example" in url:
+                assert "draft_answer" in prompt
+                return FakeResponse({"choices": [{"message": {"content": "资料中未找到相关内容。"}}]})
+            raise AssertionError("智谱不应进入默认同步复核链")
+
+    monkeypatch.setattr(ai_client_module.httpx, "AsyncClient", FakeAsyncClient)
+
+    result = asyncio.run(ai_client_module.run_joint_analysis(json.dumps({"question": "654㎡步进梁式加热炉支撑梁图号是多少？", "retrieved_artifacts": [], "artifacts": []}, ensure_ascii=False)))
+
+    assert result["provider"] == "火山大模型"
+    assert result["answer"].startswith("联合结论（火山大模型命中）：")
+    assert result["fallback_reason"] == "search_1_all_reviewers_weak"
+    assert len(result["responses"]) == 2
+    assert result["responses"][0]["provider"] == "火山大模型"
+    assert result["responses"][1]["provider"] == "DeepSeek"
+
+
+def test_provider_request_timeout_uses_shorter_timeout_for_review_mode(monkeypatch):
+    monkeypatch.setenv("AI_REVIEW_TIMEOUT_SECONDS", "12")
+    monkeypatch.setenv("CLAUDE_REVIEW_TIMEOUT_SECONDS", "18")
+    monkeypatch.setenv("TENCENT_REVIEW_TIMEOUT_SECONDS", "9")
+
+    deepseek = {"name": "DeepSeek"}
+    zhipu = {"name": "智谱清言"}
+    volc = {"name": "火山大模型"}
+    prompt = json.dumps({"question": "测试", "draft_answer": "草稿"}, ensure_ascii=False)
+
+    assert ai_client_module._provider_request_timeout(deepseek, prompt) == 12
+    assert ai_client_module._provider_request_timeout(zhipu, prompt) == 18
+    assert ai_client_module._provider_request_timeout(volc, prompt) == 9
+
+
+def test_zhipu_retries_once_after_read_timeout(tmp_path, monkeypatch):
+    monkeypatch.setattr(runtime_config_module, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(runtime_config_module, "WORKSPACE_TMP_DIR", tmp_path / "_missing_tmp_dir")
+    for key in runtime_config_module.AI_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("CLAUDE_API_URL", "https://zhipu.example/v4/chat/completions")
+    monkeypatch.setenv("CLAUDE_API_KEY", "zhipu-key")
+    monkeypatch.setenv("CLAUDE_MODEL", "glm-4.6")
+    monkeypatch.setenv("CLAUDE_PROVIDER_NAME", "智谱清言")
+    monkeypatch.setenv("CLAUDE_API_TYPE", "openai")
+    monkeypatch.setenv("CLAUDE_MAX_RETRIES", "1")
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            self.calls = 0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, json=None, headers=None, timeout=None):
+            self.calls += 1
+            if self.calls == 1:
+                raise ai_client_module.httpx.ReadTimeout("timeout")
+            return FakeResponse({"choices": [{"message": {"content": "智谱重试成功"}}]})
+
+    monkeypatch.setattr(ai_client_module.httpx, "AsyncClient", FakeAsyncClient)
+
+    result = asyncio.run(ai_client_module.run_joint_analysis(json.dumps({"question": "测试", "retrieved_artifacts": [], "artifacts": []}, ensure_ascii=False)))
+
+    assert result["provider"] == "智谱清言"
+    assert result["answer"] == "智谱重试成功"
+    assert result["responses"][0]["retry_count"] == 1
+
+
+def test_run_joint_analysis_falls_back_to_local_when_remote_models_fail(tmp_path, monkeypatch):
+    monkeypatch.setattr(runtime_config_module, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(runtime_config_module, "WORKSPACE_TMP_DIR", tmp_path / "_missing_tmp_dir")
+    for key in runtime_config_module.AI_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("AI_API_URL", "https://deepseek.example/v1/chat/completions")
+    monkeypatch.setenv("AI_API_KEY", "deepseek-key")
+    monkeypatch.setenv("AI_MODEL", "deepseek-chat")
 
     class FailingAsyncClient:
         def __init__(self, *args, **kwargs):
@@ -247,6 +586,42 @@ def test_run_joint_analysis_falls_back_to_local_when_remote_models_fail(monkeypa
     assert result["responses"][0]["error_message"] == "boom"
     assert "DeepSeek 调用失败：boom" == result["responses"][0]["summary"]
     assert result["responses"][-1]["provider"] == "本地规则"
+    assert result["fallback_reason"] == "all_remote_failed"
+
+
+def test_configured_model_providers_include_openai_endpoint_diagnostic(tmp_path, monkeypatch):
+    monkeypatch.setattr(runtime_config_module, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(runtime_config_module, "WORKSPACE_TMP_DIR", tmp_path / "_missing_tmp_dir")
+    for key in runtime_config_module.AI_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("CLAUDE_API_URL", "https://proxy.example.com/v1")
+    monkeypatch.setenv("CLAUDE_API_KEY", "claude-key")
+    monkeypatch.setenv("CLAUDE_MODEL", "glm-4.6")
+    monkeypatch.setenv("CLAUDE_PROVIDER_NAME", "智谱清言")
+    monkeypatch.setenv("CLAUDE_API_TYPE", "openai")
+
+    class FailingAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, json=None, headers=None):
+            raise ai_client_module.httpx.HTTPError("boom")
+
+    monkeypatch.setattr(ai_client_module.httpx, "AsyncClient", FailingAsyncClient)
+
+    result = asyncio.run(ai_client_module.run_joint_analysis("测试 prompt"))
+
+    assert result["diagnostics"]["configured_provider_count"] == 1
+    zhipu = result["diagnostics"]["configured_providers"][0]
+    assert zhipu["provider"] == "智谱清言"
+    assert zhipu["api_type"] == "openai"
+    assert zhipu["warning"] == "OpenAI 兼容协议需要完整聊天补全端点"
 
 
 def test_configured_model_providers_loads_project_env_and_tencent_csv(tmp_path, monkeypatch):
@@ -258,9 +633,13 @@ def test_configured_model_providers_loads_project_env_and_tencent_csv(tmp_path, 
                 "AI_API_KEY=deepseek-key",
                 "AI_MODEL=deepseek-chat",
                 "CLAUDE_API_KEY=claude-key",
-                "CLAUDE_MODEL=claude-3-5-sonnet",
-                "TENCENT_API_URL=https://tencent.example/v1/chat/completions",
-                "TENCENT_MODEL=hunyuan-lite",
+                "CLAUDE_MODEL=glm-4.6",
+                "CLAUDE_PROVIDER_NAME=智谱清言",
+                "CLAUDE_API_TYPE=openai",
+                "TENCENT_API_URL=https://volc.example/api/v3/chat/completions",
+                "TENCENT_API_KEY=volc-key",
+                "TENCENT_MODEL=doubao-seed-1-6-251015",
+                "TENCENT_PROVIDER_NAME=火山大模型",
             ]
         ),
         encoding="utf-8",
@@ -277,12 +656,70 @@ def test_configured_model_providers_loads_project_env_and_tencent_csv(tmp_path, 
 
     providers = ai_client_module._configured_model_providers()
 
-    assert [provider["name"] for provider in providers] == ["DeepSeek", "Claude", "Tencent"]
+    assert [provider["name"] for provider in providers] == ["DeepSeek", "智谱清言", "火山大模型"]
+    assert providers[2]["model_candidates"][0] == "doubao-seed-1-6-251015"
     assert os.environ["TENCENT_SECRET_ID"] == "foo"
     assert os.environ["TENCENT_SECRET_KEY"] == "bar"
 
 
-def test_configured_model_providers_uses_tencentcloud_when_only_secret_pair_exists(tmp_path, monkeypatch):
+def test_volcengine_provider_retries_next_model_when_primary_model_not_open(tmp_path, monkeypatch):
+    monkeypatch.setattr(runtime_config_module, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(runtime_config_module, "WORKSPACE_TMP_DIR", tmp_path / "_missing_tmp_dir")
+    for key in runtime_config_module.AI_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("TENCENT_API_URL", "https://ark.cn-beijing.volces.com/api/v3/chat/completions")
+    monkeypatch.setenv("TENCENT_API_KEY", "volc-key")
+    monkeypatch.setenv("TENCENT_MODEL", "doubao-seed-1-6-251015")
+    monkeypatch.setenv("TENCENT_MODEL_CANDIDATES", "doubao-seed-1-6-251015,doubao-seed-1-6-flash-250828")
+    monkeypatch.setenv("TENCENT_PROVIDER_NAME", "火山大模型")
+
+    class FakeResponse:
+        def __init__(self, payload, status_code=200):
+            self._payload = payload
+            self.status_code = status_code
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                request = ai_client_module.httpx.Request("POST", "https://ark.cn-beijing.volces.com/api/v3/chat/completions")
+                raise ai_client_module.httpx.HTTPStatusError("boom", request=request, response=self)
+
+        def json(self):
+            return self._payload
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, json=None, headers=None):
+            model = json["model"]
+            if model == "doubao-seed-1-6-251015":
+                return FakeResponse(
+                    {"error": {"code": "ModelNotOpen", "message": "primary closed"}},
+                    status_code=404,
+                )
+            return FakeResponse({"choices": [{"message": {"content": "火山候选模型回答"}}]})
+
+    monkeypatch.setattr(ai_client_module.httpx, "AsyncClient", FakeAsyncClient)
+
+    result = asyncio.run(ai_client_module.run_joint_analysis(json.dumps({"question": "测试", "retrieved_artifacts": [], "artifacts": []}, ensure_ascii=False)))
+
+    volc_response = result["responses"][0]
+    assert volc_response["provider"] == "火山大模型"
+    assert volc_response["model"] == "doubao-seed-1-6-flash-250828"
+    assert volc_response["answer"] == "火山候选模型回答"
+    assert volc_response["model_attempts"][0]["model"] == "doubao-seed-1-6-251015"
+    assert volc_response["model_attempts"][0]["status"] == "failed"
+    assert volc_response["model_attempts"][1]["model"] == "doubao-seed-1-6-flash-250828"
+    assert volc_response["model_attempts"][1]["status"] == "success"
+
+
+def test_configured_model_providers_uses_tencentcloud_when_type_is_explicit(tmp_path, monkeypatch):
     tmp_dir = tmp_path / ".monkeycode-tmp-files"
     tmp_dir.mkdir()
     (tmp_dir / "demo-SecretKey.csv").write_text("SecretId,SecretKey\nfoo,bar\n", encoding="utf-8")
@@ -292,11 +729,12 @@ def test_configured_model_providers_uses_tencentcloud_when_only_secret_pair_exis
 
     monkeypatch.setattr(runtime_config_module, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(runtime_config_module, "WORKSPACE_TMP_DIR", tmp_dir)
+    monkeypatch.setenv("TENCENT_API_TYPE", "tencentcloud")
 
     providers = ai_client_module._configured_model_providers()
 
     assert len(providers) == 1
-    assert providers[0]["name"] == "Tencent"
+    assert providers[0]["name"] == "火山大模型"
     assert providers[0]["type"] == "tencentcloud"
     assert providers[0]["model"] == "hunyuan-turbos-latest"
 
@@ -1452,6 +1890,59 @@ def test_ai_analysis_falls_back_when_lightrag_retrieval_fails(monkeypatch):
     db.close()
     assert request_json["retrieved_artifacts"][0]["title"] == "装出钢机回退记录"
     assert request_json["retrieved_artifacts"][0].get("retrieval_provider") is None
+
+
+def test_ai_analysis_query_variants_and_evidence_fusion_improve_hit_rate():
+    init_db()
+    project_code = f"PRJ-EVID-{uuid.uuid4().hex[:8].upper()}"
+    project = client.post(
+        "/api/projects",
+        json={"code": project_code, "name": "证据融合项目", "owner_user_id": 2},
+    )
+    assert project.status_code == 200
+    project_id = project.json()["id"]
+
+    item = client.post(
+        f"/api/projects/{project_id}/items",
+        json={"code": f"ITEM-{uuid.uuid4().hex[:6].upper()}", "name": "技术性能表资料", "furnace_type": "walking_beam_furnace", "business_scope": "资料测试", "design_stage": "V1", "status": "ACTIVE"},
+    )
+    assert item.status_code == 200
+    item_id = item.json()["id"]
+
+    artifact = client.post(
+        f"/api/projects/{project_id}/artifacts",
+        headers={"X-Role": "engineer"},
+        json={
+            "project_item_id": item_id,
+            "artifact_type": "technical_description",
+            "title": "IF000396c-技术性能表",
+            "source_code": "DOC-EVID-001",
+            "content": "356m2步双蓄热步进梁式加热炉 技术性能表 技术性能项目名称 技术参数 出炉温度 980～1150 炉底机械传动 液压 支撑梁冷却方式 汽化冷却",
+        },
+    )
+    assert artifact.status_code == 200
+
+    analysis = client.post(
+        f"/api/projects/{project_id}/ai-analyses",
+        headers={"X-Role": "engineer"},
+        json={
+            "project_item_id": item_id,
+            "equipment_name": "项目资料",
+            "execution_ids": [],
+            "artifact_ids": [],
+            "question": "356m2步双蓄热步进梁式加热炉的出路温度是多少？",
+        },
+    )
+    assert analysis.status_code == 200
+    answer = analysis.json()["result"]["answer"]
+    assert "980～1150" in answer
+
+    db = SessionLocal()
+    saved_analysis = db.query(models.AiAnalysis).order_by(models.AiAnalysis.id.desc()).first()
+    request_json = json.loads(saved_analysis.request_json)
+    db.close()
+    assert request_json["retrieved_artifacts"]
+    assert request_json["retrieved_artifacts"][0]["title"] == "IF000396c-技术性能表"
 
 
 def test_ai_analysis_accepts_pasted_images():

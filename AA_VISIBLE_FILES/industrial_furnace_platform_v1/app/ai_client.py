@@ -21,12 +21,13 @@ logger = logging.getLogger(__name__)
 SYSTEM_PROMPT = """你是工业炉项目资料问答助手。
 规则：
 1. 只根据用户问题、<retrieved_artifacts>、<artifacts>、<executions> 和 <pasted_images> 中提供的内容回答。
-2. 回答应直接、简洁，并尽量注明资料出处，格式使用 资料类型《资料标题》。
+2. 回答应直接、简洁，并尽量注明资料出处，格式使用 资料类型《资料标题》。 
 3. retrieved_artifacts 是当前问题优先命中的资料片段，回答时优先使用它们。
 4. 资料中出现“已解析 Word 正文”“已解析 PDF 文本”“已解析 Excel 表格”或“已提取图片元信息”时，直接基于这些内容回答。
 5. 资料中出现“当前版本仅支持自动解析 .docx 和文本类附件正文”或“当前版本只能直接读取文本类附件正文”时，说明这是旧版上传记录，应提示用户重新上传原文件。
 6. 资料里找不到答案时，明确回答“资料中未找到相关内容”。
-7. 不要编造，不要把资料清单伪装成结论。"""
+7. 不要编造，不要把资料清单伪装成结论。
+8. 如果提供了 <draft_answer>，你需要基于资料核对这份草稿；资料支持时给出修正版或确认版，资料不支持时明确回答“资料中未找到相关内容”。"""
 
 
 def _normalize_text(value: str) -> str:
@@ -91,6 +92,9 @@ def _format_provider_prompt(prompt: str) -> str:
     artifacts = data.get("artifacts") or []
     executions = data.get("executions") or []
     pasted_images = data.get("pasted_images") or []
+    evidence_candidates = data.get("evidence_candidates") or _build_evidence_candidates(question, retrieved_artifacts)
+    draft_answer = str(data.get("draft_answer") or "").strip()
+    review_mode = str(data.get("review_mode") or "").strip()
 
     retrieved_lines = []
     for index, artifact in enumerate(retrieved_artifacts, start=1):
@@ -122,15 +126,33 @@ def _format_provider_prompt(prompt: str) -> str:
             f"summary: {str(image.get('summary') or '').strip() or '无'}"
         )
 
-    return "\n\n".join(
+    evidence_lines = []
+    for index, evidence in enumerate(evidence_candidates[:12], start=1):
+        evidence_lines.append(
+            f"{index}. source: {evidence.get('source') or '项目资料'}\n"
+            f"signal: {evidence.get('signal') or 'general'}\n"
+            f"snippet: {str(evidence.get('snippet') or '').strip() or '无'}"
+        )
+
+    draft_lines = []
+    if draft_answer:
+        draft_lines.append(draft_answer)
+    if review_mode:
+        draft_lines.append(f"review_mode: {review_mode}")
+
+    sections = [f"<question>\n{question or '未提供问题'}\n</question>"]
+    if draft_lines:
+        sections.append(_section("draft_answer", draft_lines))
+    sections.extend(
         [
-            f"<question>\n{question or '未提供问题'}\n</question>",
+            _section("evidence_candidates", evidence_lines),
             _section("retrieved_artifacts", retrieved_lines),
             _section("artifacts", artifact_lines),
             _section("executions", execution_lines),
             _section("pasted_images", image_lines),
         ]
     )
+    return "\n\n".join(sections)
 
 
 def _is_complex_question_for_fallback(question: str, keywords: list[str]) -> bool:
@@ -160,7 +182,11 @@ def _is_time_question(question: str) -> bool:
 def _is_parameter_table_question(question: str) -> bool:
     if _contains_any(question, ("技术性能表", "主要参数", "技术参数", "参数", "炉底机械传动", "传动形式")):
         return True
-    return _contains_any(question, ("方坯尺寸", "坯料尺寸", "钢坯尺寸", "坯料规格", "方坯规格", "坯料断面"))
+    if _contains_any(question, ("方坯尺寸", "坯料尺寸", "钢坯尺寸", "坯料规格", "方坯规格", "坯料断面")):
+        return True
+    if any(field in question for field in TABLE_FIELDS):
+        return True
+    return any(any(alias in question for alias in aliases) for aliases in TABLE_FIELD_ALIASES.values())
 
 
 def _is_doc_number_question(question: str) -> bool:
@@ -348,6 +374,27 @@ def _structured_artifact_answer(question: str, retrieved_artifacts: list[dict]) 
     return "\n".join(lines)
 
 
+def _build_evidence_candidates(question: str, retrieved_artifacts: list[dict]) -> list[dict[str, str]]:
+    keywords = [keyword for keyword in _fallback_keywords(question) if len(keyword) >= 2]
+    rows: list[dict[str, str]] = []
+    for artifact in retrieved_artifacts[:8]:
+        source = f"{artifact.get('type_name') or '项目资料'}《{artifact.get('title') or '未命名资料'}》"
+        content = str(artifact.get("content") or "")
+        added = False
+        for sentence in _split_sentences(content):
+            if keywords and not any(keyword in sentence for keyword in keywords) and not any(field in sentence for field in TABLE_FIELDS):
+                continue
+            rows.append({"source": source, "signal": "keyword_hit", "snippet": sentence[:220]})
+            added = True
+            if len(rows) >= 12:
+                return rows
+        if not added and content:
+            rows.append({"source": source, "signal": "artifact_excerpt", "snippet": _normalize_text(content)[:220]})
+        if len(rows) >= 12:
+            return rows[:12]
+    return rows[:12]
+
+
 def _artifact_answer(prompt: str) -> str:
     try:
         data = json.loads(prompt)
@@ -393,7 +440,15 @@ def _artifact_answer(prompt: str) -> str:
     return "\n".join(answer_lines)
 
 
-def _provider_spec(name: str, provider_type: str, api_url: str, api_key: str, model: str) -> dict[str, str] | None:
+def _parse_model_candidates(value: str, primary_model: str) -> list[str]:
+    candidates = [str(item).strip() for item in str(value or "").split(",")]
+    normalized = [item for item in candidates if item]
+    if primary_model:
+        normalized.insert(0, primary_model)
+    return list(dict.fromkeys(normalized))
+
+
+def _provider_spec(name: str, provider_type: str, api_url: str, api_key: str, model: str, model_candidates: list[str] | None = None) -> dict[str, Any] | None:
     if not api_url or not api_key or not model:
         return None
     return {
@@ -402,6 +457,7 @@ def _provider_spec(name: str, provider_type: str, api_url: str, api_key: str, mo
         "api_url": api_url,
         "api_key": api_key,
         "model": model,
+        "model_candidates": model_candidates or [model],
     }
 
 
@@ -420,7 +476,7 @@ def _tencentcloud_provider_spec(name: str, secret_id: str, secret_key: str, mode
     }
 
 
-def _configured_model_providers() -> list[dict[str, str]]:
+def _configured_model_providers() -> list[dict[str, Any]]:
     load_runtime_ai_env()
     providers = []
     deepseek = _provider_spec(
@@ -429,34 +485,48 @@ def _configured_model_providers() -> list[dict[str, str]]:
         os.getenv("AI_API_URL", "").strip(),
         os.getenv("AI_API_KEY", "").strip(),
         os.getenv("AI_MODEL", "").strip() or "industrial-furnace-v1",
+        _parse_model_candidates(os.getenv("AI_MODEL_CANDIDATES", ""), os.getenv("AI_MODEL", "").strip() or "industrial-furnace-v1"),
     )
     if deepseek:
         providers.append(deepseek)
 
     claude = _provider_spec(
-        os.getenv("CLAUDE_PROVIDER_NAME", "Claude").strip() or "Claude",
-        os.getenv("CLAUDE_API_TYPE", "anthropic").strip() or "anthropic",
-        os.getenv("CLAUDE_API_URL", "https://api.anthropic.com/v1/messages").strip(),
+        os.getenv("CLAUDE_PROVIDER_NAME", "智谱清言").strip() or "智谱清言",
+        os.getenv("CLAUDE_API_TYPE", "openai").strip() or "openai",
+        os.getenv("CLAUDE_API_URL", "https://open.bigmodel.cn/api/paas/v4/chat/completions").strip(),
         os.getenv("CLAUDE_API_KEY", "").strip(),
-        os.getenv("CLAUDE_MODEL", "").strip() or "claude-3-5-sonnet-latest",
+        os.getenv("CLAUDE_MODEL", "").strip() or "glm-5.1",
+        _parse_model_candidates(os.getenv("CLAUDE_MODEL_CANDIDATES", "glm-5.1,glm-4.7,glm-4.6"), os.getenv("CLAUDE_MODEL", "").strip() or "glm-5.1"),
     )
     if claude:
         providers.append(claude)
 
-    tencent = _provider_spec(
-        os.getenv("TENCENT_PROVIDER_NAME", "Tencent").strip() or "Tencent",
-        os.getenv("TENCENT_API_TYPE", "openai").strip() or "openai",
-        os.getenv("TENCENT_API_URL", "").strip(),
-        os.getenv("TENCENT_API_KEY", "").strip() or os.getenv("TENCENT_SECRET_KEY", "").strip(),
-        os.getenv("TENCENT_MODEL", "").strip(),
-    )
+    tencent_type = os.getenv("TENCENT_API_TYPE", "openai").strip() or "openai"
+    tencent = None
     tencentcloud = None
-    if not tencent:
+    if tencent_type == "tencentcloud":
         tencentcloud = _tencentcloud_provider_spec(
-            os.getenv("TENCENT_PROVIDER_NAME", "Tencent").strip() or "Tencent",
+            os.getenv("TENCENT_PROVIDER_NAME", "火山大模型").strip() or "火山大模型",
             os.getenv("TENCENT_SECRET_ID", "").strip(),
             os.getenv("TENCENT_SECRET_KEY", "").strip(),
             os.getenv("TENCENT_MODEL", "").strip() or "hunyuan-turbos-latest",
+        )
+    else:
+        tencent_model = os.getenv("TENCENT_MODEL", "").strip() or "doubao-seed-2-0-lite-260428"
+        tencent_model_candidates = _parse_model_candidates(
+            os.getenv(
+                "TENCENT_MODEL_CANDIDATES",
+                "doubao-seed-2-0-lite-260428,doubao-seed-2-0-mini-260428,doubao-seed-2-0-pro-260215,doubao-seed-2-0-lite-260215,doubao-seed-1-6-flash-250828,doubao-seed-1-6-251015",
+            ),
+            tencent_model,
+        )
+        tencent = _provider_spec(
+            os.getenv("TENCENT_PROVIDER_NAME", "火山大模型").strip() or "火山大模型",
+            tencent_type,
+            os.getenv("TENCENT_API_URL", "https://ark.cn-beijing.volces.com/api/v3/chat/completions").strip(),
+            os.getenv("TENCENT_API_KEY", "").strip(),
+            tencent_model,
+            tencent_model_candidates,
         )
     if tencent:
         providers.append(tencent)
@@ -464,9 +534,36 @@ def _configured_model_providers() -> list[dict[str, str]]:
         providers.append(tencentcloud)
     if not providers:
         logger.warning(
-            "没有任何 AI 提供商配置有效，将使用本地规则兜底。请检查环境变量：AI_API_KEY / CLAUDE_API_KEY / TENCENT_SECRET_ID"
+            "没有任何 AI 提供商配置有效，将使用本地规则兜底。请检查环境变量：AI_API_KEY / CLAUDE_API_KEY / TENCENT_API_KEY"
         )
     return providers
+
+
+def _provider_diagnostic(provider: dict[str, Any]) -> dict[str, Any]:
+    api_url = str(provider.get("api_url") or "").strip()
+    provider_type = str(provider.get("type") or "").strip()
+    warning = ""
+    hint = ""
+    normalized_url = api_url.rstrip("/")
+
+    if provider_type == "anthropic" and normalized_url and not normalized_url.endswith("/v1/messages"):
+        warning = "Anthropic 协议通常需要 /v1/messages 端点"
+        hint = "如果当前地址是 OpenAI 兼容代理，请把 CLAUDE_API_TYPE 改为 openai；如果走 Anthropic 官方接口，请确认 URL 为 https://api.anthropic.com/v1/messages"
+    elif provider_type == "openai" and normalized_url.endswith("/v1"):
+        warning = "OpenAI 兼容协议需要完整聊天补全端点"
+        hint = "当前代码会直接 POST 到配置 URL，请把 API 地址配置为完整端点，例如 /v1/chat/completions"
+    elif provider_type == "tencentcloud":
+        hint = "当前 provider 走腾讯云原生 SDK，开通状态与额度请在腾讯云控制台确认"
+
+    return {
+        "provider": provider.get("name", "unknown"),
+        "model": provider.get("model", ""),
+        "model_candidates": provider.get("model_candidates") or [],
+        "api_type": provider_type,
+        "api_url": api_url,
+        "warning": warning,
+        "hint": hint,
+    }
 
 
 def _openai_payload(prompt: str, model: str) -> dict[str, Any]:
@@ -513,13 +610,25 @@ def _extract_tencentcloud_content(data: dict[str, Any]) -> str:
     return str(message.get("Content") or "")
 
 
-def _build_error_response(provider: dict[str, str], exc: Exception) -> dict[str, Any]:
+def _build_error_response(provider: dict[str, Any], exc: Exception) -> dict[str, Any]:
     error_message = str(exc).strip() or f"{provider['name']} 调用失败"
     error_code = ""
     if isinstance(exc, TencentCloudSDKException):
         error_code = str(getattr(exc, "code", "") or "").strip()
     elif isinstance(exc, httpx.HTTPStatusError) and exc.response is not None:
         error_code = str(exc.response.status_code)
+        try:
+            payload = exc.response.json()
+        except Exception:
+            payload = None
+        if isinstance(payload, dict):
+            service_error = payload.get("error") if isinstance(payload.get("error"), dict) else payload
+            service_code = str(service_error.get("code") or "").strip() if isinstance(service_error, dict) else ""
+            service_message = str(service_error.get("message") or "").strip() if isinstance(service_error, dict) else ""
+            if service_code:
+                error_code = service_code
+            if service_message:
+                error_message = service_message
     summary = f"{provider['name']} 调用失败"
     if error_code and error_message:
         summary = f"{summary}：{error_code} {error_message}"
@@ -535,6 +644,19 @@ def _build_error_response(provider: dict[str, str], exc: Exception) -> dict[str,
         "error_message": error_message,
         "errors": [error_message],
     }
+
+
+def _provider_supports_model_retry(provider: dict[str, Any]) -> bool:
+    provider_type = str(provider.get("type") or "").strip().lower()
+    api_url = str(provider.get("api_url") or "").lower()
+    provider_name = str(provider.get("name") or "").lower()
+    model = str(provider.get("model") or "").lower()
+    return provider_type == "openai" and any(marker in " ".join([api_url, provider_name, model]) for marker in ("volc", "ark", "doubao", "火山"))
+
+
+def _model_retryable_error(response: dict[str, Any]) -> bool:
+    error_code = str(response.get("error_code") or "").strip()
+    return error_code in {"ModelNotOpen", "ModelNotFound", "InvalidEndpointOrModel"}
 
 
 def _call_tencentcloud_provider(provider: dict[str, str], prompt: str) -> dict[str, Any]:
@@ -574,42 +696,104 @@ def _call_tencentcloud_provider(provider: dict[str, str], prompt: str) -> dict[s
         return _build_error_response(provider, exc)
 
 
-async def _call_model_provider(client: httpx.AsyncClient, provider: dict[str, str], prompt: str) -> dict[str, Any]:
-    try:
-        if provider["type"] == "tencentcloud":
-            return await asyncio.to_thread(_call_tencentcloud_provider, provider, prompt)
-        if provider["type"] == "anthropic":
-            response = await client.post(
-                provider["api_url"],
-                json=_anthropic_payload(prompt, provider["model"]),
-                headers={
-                    "Content-Type": "application/json",
-                    "x-api-key": provider["api_key"],
-                    "anthropic-version": os.getenv("CLAUDE_API_VERSION", "2023-06-01"),
-                },
-            )
-            response.raise_for_status()
-            data = response.json()
-            content = _extract_anthropic_content(data)
-        else:
-            response = await client.post(
-                provider["api_url"],
-                json=_openai_payload(prompt, provider["model"]),
-                headers={"Content-Type": "application/json", "Authorization": f"Bearer {provider['api_key']}"},
-            )
-            response.raise_for_status()
-            data = response.json()
-            content = _extract_openai_content(data)
-        return {
-            "provider": provider["name"],
-            "model": provider["model"],
-            "api_type": provider["type"],
-            "answer": content,
-            "summary": content,
-            "raw": data,
-        }
-    except (httpx.HTTPError, json.JSONDecodeError) as exc:
-        return _build_error_response(provider, exc)
+async def _call_model_provider(client: httpx.AsyncClient, provider: dict[str, Any], prompt: str) -> dict[str, Any]:
+    model_candidates = provider.get("model_candidates") or [provider.get("model")]
+    attempts: list[dict[str, Any]] = []
+    for candidate_model in model_candidates:
+        candidate_provider = dict(provider)
+        candidate_provider["model"] = str(candidate_model or "").strip() or str(provider.get("model") or "")
+        response = await _call_single_model_provider(client, candidate_provider, prompt)
+        if not response.get("errors"):
+            if attempts:
+                response["model_attempts"] = attempts + [{"model": candidate_provider["model"], "status": "success"}]
+                response["summary"] = response.get("answer") or response.get("summary") or ""
+            return response
+        attempts.append(
+            {
+                "model": candidate_provider["model"],
+                "status": "failed",
+                "error_code": response.get("error_code") or "",
+                "error_message": response.get("error_message") or "",
+            }
+        )
+        if not (_provider_supports_model_retry(candidate_provider) and _model_retryable_error(response)):
+            response["model_attempts"] = attempts
+            return response
+    failed_response = _call_local_retry_exhausted(provider, attempts)
+    return failed_response
+
+
+def _call_local_retry_exhausted(provider: dict[str, Any], attempts: list[dict[str, Any]]) -> dict[str, Any]:
+    last_attempt = attempts[-1] if attempts else {}
+    attempted_models = ", ".join(str(item.get("model") or "") for item in attempts if item.get("model"))
+    error_message = str(last_attempt.get("error_message") or f"{provider['name']} 所有候选模型均不可用").strip()
+    summary = f"{provider['name']} 调用失败：{error_message}"
+    if attempted_models:
+        summary = f"{summary}。已尝试模型：{attempted_models}"
+    return {
+        "provider": provider["name"],
+        "model": str(last_attempt.get("model") or provider.get("model") or ""),
+        "api_type": provider["type"],
+        "summary": summary,
+        "error_type": "ModelRetryExhausted",
+        "error_code": str(last_attempt.get("error_code") or ""),
+        "error_message": error_message,
+        "errors": [error_message],
+        "model_attempts": attempts,
+    }
+
+
+async def _call_single_model_provider(client: httpx.AsyncClient, provider: dict[str, Any], prompt: str) -> dict[str, Any]:
+    max_retries = _provider_max_retries(provider)
+    timeout = _provider_request_timeout(provider, prompt)
+    for attempt in range(max_retries + 1):
+        try:
+            if provider["type"] == "tencentcloud":
+                return await asyncio.to_thread(_call_tencentcloud_provider, provider, prompt)
+            if provider["type"] == "anthropic":
+                response = await _post_with_timeout(
+                    client,
+                    provider["api_url"],
+                    _anthropic_payload(prompt, provider["model"]),
+                    {
+                        "Content-Type": "application/json",
+                        "x-api-key": provider["api_key"],
+                        "anthropic-version": os.getenv("CLAUDE_API_VERSION", "2023-06-01"),
+                    },
+                    timeout,
+                )
+                response.raise_for_status()
+                data = response.json()
+                content = _extract_anthropic_content(data)
+            else:
+                response = await _post_with_timeout(
+                    client,
+                    provider["api_url"],
+                    _openai_payload(prompt, provider["model"]),
+                    {"Content-Type": "application/json", "Authorization": f"Bearer {provider['api_key']}"},
+                    timeout,
+                )
+                response.raise_for_status()
+                data = response.json()
+                content = _extract_openai_content(data)
+            result = {
+                "provider": provider["name"],
+                "model": provider["model"],
+                "api_type": provider["type"],
+                "answer": content,
+                "summary": content,
+                "raw": data,
+            }
+            if attempt:
+                result["retry_count"] = attempt
+            return result
+        except (httpx.HTTPError, json.JSONDecodeError) as exc:
+            if attempt < max_retries and _provider_retryable_exception(exc):
+                continue
+            error_response = _build_error_response(provider, exc)
+            if attempt:
+                error_response["retry_count"] = attempt
+            return error_response
 
 
 def _local_mock_response(prompt: str) -> dict[str, Any]:
@@ -626,28 +810,308 @@ def _local_mock_response(prompt: str) -> dict[str, Any]:
     }
 
 
+def _extract_prompt_question(prompt: str) -> str:
+    try:
+        data = json.loads(prompt)
+    except json.JSONDecodeError:
+        return str(prompt or "").strip()
+    return str(data.get("question") or data.get("original_question") or "").strip()
+
+
+def _is_substantive_local_answer(answer: str) -> bool:
+    text = _normalize_text(answer)
+    if not text:
+        return False
+    placeholders = (
+        "当前 AI 服务未配置或不可用",
+        "项目资料中还没有可用于回答这个问题的内容",
+        "当前项目资料里没有检索到与这个问题直接相关的内容",
+        "没有读取到可用于回答的项目资料",
+    )
+    return not any(marker in text for marker in placeholders)
+
+
+def _answer_confidence_score(question: str, answer: str) -> int:
+    text = _normalize_text(answer)
+    lowered = text.lower()
+    score = 0
+
+    if not text:
+        return -100
+
+    weak_markers = (
+        "资料中未找到相关内容",
+        "无法找到",
+        "未找到",
+        "没有找到",
+        "无法提供",
+        "无法读取具体内容",
+        "请重新上传",
+    )
+    if any(marker in text for marker in weak_markers):
+        score -= 6
+
+    strong_markers = (
+        "根据",
+        "资料依据",
+        "资料原文",
+        "资料片段",
+        "技术性能表",
+        "图号",
+        "出炉温度",
+    )
+    score += sum(2 for marker in strong_markers if marker in text)
+
+    if "《" in text and "》" in text:
+        score += 4
+    if re.search(r"\d", text):
+        score += 3
+    if re.search(r"[a-zA-Z]{2,}[0-9./-]{2,}|[0-9./-]{2,}[a-zA-Z]{1,}", text):
+        score += 4
+
+    keywords = _fallback_keywords(question)
+    score += sum(1 for keyword in keywords if len(keyword) >= 2 and keyword in text)
+    return score
+
+
+def _answer_is_hit(question: str, answer: str) -> bool:
+    return _answer_confidence_score(question, answer) >= 2
+
+
+def _provider_matches(provider: dict[str, Any], *keywords: str) -> bool:
+    provider_name = str(provider.get("name") or provider.get("provider") or "").lower()
+    return any(str(keyword).lower() in provider_name for keyword in keywords)
+
+
+def _provider_order_tokens(value: str, default: str) -> list[str]:
+    raw = str(value or "").strip() or default
+    return [item.strip().lower() for item in raw.split(",") if item.strip()]
+
+
+def _provider_matches_token(provider: dict[str, Any], token: str) -> bool:
+    aliases = {
+        "volc": ("火山", "volc", "ark", "doubao"),
+        "volcengine": ("火山", "volc", "ark", "doubao"),
+        "doubao": ("火山", "volc", "ark", "doubao"),
+        "deepseek": ("deepseek",),
+        "zhipu": ("智谱", "zhipu", "bigmodel", "glm"),
+        "glm": ("智谱", "zhipu", "bigmodel", "glm"),
+        "bigmodel": ("智谱", "zhipu", "bigmodel", "glm"),
+    }
+    return _provider_matches(provider, *(aliases.get(token, (token,))))
+
+
+def _order_providers_by_tokens(providers: list[dict[str, Any]], tokens: list[str]) -> list[dict[str, Any]]:
+    ordered: list[dict[str, Any]] = []
+    used_names: set[str] = set()
+    for token in tokens:
+        for provider in providers:
+            provider_name = str(provider.get("name") or "")
+            if provider_name in used_names:
+                continue
+            if _provider_matches_token(provider, token):
+                ordered.append(provider)
+                used_names.add(provider_name)
+    for provider in providers:
+        provider_name = str(provider.get("name") or "")
+        if provider_name in used_names:
+            continue
+        ordered.append(provider)
+        used_names.add(provider_name)
+    return ordered
+
+
+def _workflow_search_providers(providers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    order_tokens = _provider_order_tokens(os.getenv("AI_WORKFLOW_ORDER", ""), "volcengine,deepseek,zhipu")
+    return _order_providers_by_tokens(providers, order_tokens)
+
+
+def _workflow_review_providers(search_provider: dict[str, Any], providers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    order_tokens = _provider_order_tokens(os.getenv("AI_REVIEWER_ORDER", ""), "deepseek,zhipu,volcengine")
+    ordered = _order_providers_by_tokens(providers, order_tokens)
+    search_name = str(search_provider.get("name") or "")
+    reviewers = [provider for provider in ordered if str(provider.get("name") or "") != search_name]
+    max_reviewers = int(os.getenv("AI_SYNC_REVIEWERS", "1").strip() or "1")
+    if max_reviewers <= 0:
+        return []
+    return reviewers[:max_reviewers]
+
+
+def _prompt_is_review_mode(prompt: str) -> bool:
+    try:
+        data = json.loads(prompt)
+    except json.JSONDecodeError:
+        return False
+    return bool(str(data.get("draft_answer") or "").strip())
+
+
+def _provider_request_timeout(provider: dict[str, Any], prompt: str = "") -> float:
+    is_review_mode = _prompt_is_review_mode(prompt)
+    if _provider_matches(provider, "智谱", "zhipu", "bigmodel", "glm"):
+        if is_review_mode:
+            return float(os.getenv("CLAUDE_REVIEW_TIMEOUT_SECONDS", "20").strip() or "20")
+        return float(os.getenv("CLAUDE_TIMEOUT_SECONDS", "90").strip() or "90")
+    if _provider_matches(provider, "火山", "volc", "ark", "doubao"):
+        if is_review_mode:
+            return float(os.getenv("TENCENT_REVIEW_TIMEOUT_SECONDS", "20").strip() or "20")
+        return float(os.getenv("TENCENT_TIMEOUT_SECONDS", "60").strip() or "60")
+    if is_review_mode:
+        return float(os.getenv("AI_REVIEW_TIMEOUT_SECONDS", "20").strip() or "20")
+    return float(os.getenv("AI_TIMEOUT_SECONDS", "45").strip() or "45")
+
+
+def _provider_max_retries(provider: dict[str, Any]) -> int:
+    if _provider_matches(provider, "智谱", "zhipu", "bigmodel", "glm"):
+        return int(os.getenv("CLAUDE_MAX_RETRIES", "1").strip() or "1")
+    return int(os.getenv("AI_MAX_RETRIES", "0").strip() or "0")
+
+
+def _provider_retryable_exception(exc: Exception) -> bool:
+    return isinstance(exc, httpx.ReadTimeout)
+
+
+async def _post_with_timeout(client: httpx.AsyncClient, url: str, json_payload: dict[str, Any], headers: dict[str, str], timeout: float) -> Any:
+    try:
+        return await client.post(url, json=json_payload, headers=headers, timeout=timeout)
+    except TypeError:
+        return await client.post(url, json=json_payload, headers=headers)
+
+
+def _build_review_prompt(prompt: str, draft_answer: str, reviewer_name: str) -> str:
+    try:
+        data = json.loads(prompt)
+    except json.JSONDecodeError:
+        data = {"question": str(prompt or "")}
+    data["draft_answer"] = draft_answer
+    data["review_mode"] = f"请基于资料复核这份草稿。审核角色：{reviewer_name}。如果草稿有误，请直接给出修正版；如果资料不支持草稿，请回答资料中未找到相关内容。"
+    return json.dumps(data, ensure_ascii=False)
+
+
+def _merge_joint_answer(primary_provider: str, primary_answer: str, reviewer_provider: str, reviewer_answer: str) -> str:
+    primary_score = len(str(primary_answer or "").strip())
+    reviewer_score = len(str(reviewer_answer or "").strip())
+    best_answer = reviewer_answer if reviewer_score > primary_score else primary_answer
+    return f"联合结论（{primary_provider}初判，{reviewer_provider}复核）：\n{best_answer}"
+
+
+async def _run_prioritized_review_flow(client: httpx.AsyncClient, prompt: str, providers: list[dict[str, Any]]) -> tuple[dict[str, Any], list[dict[str, Any]], str]:
+    question = _extract_prompt_question(prompt)
+    responses = []
+    search_role_labels = ["primary_search", "secondary_search", "tertiary_search"]
+
+    for search_index, search_provider in enumerate(providers):
+        search_result = await _call_model_provider(client, search_provider, prompt)
+        if search_index < len(search_role_labels):
+            search_result["workflow_role"] = search_role_labels[search_index]
+        responses.append(search_result)
+        search_answer = str(search_result.get("answer") or "")
+        if not _answer_is_hit(question, search_answer):
+            continue
+
+        review_providers = _workflow_review_providers(search_provider, providers)
+        for review_index, reviewer in enumerate(review_providers):
+            review = await _call_model_provider(client, reviewer, _build_review_prompt(prompt, search_answer, reviewer["name"]))
+            review["workflow_role"] = "reviewer" if review_index == 0 else "fallback_reviewer"
+            responses.append(review)
+            review_answer = str(review.get("answer") or "")
+            if _answer_is_hit(question, review_answer):
+                final_answer = _merge_joint_answer(search_provider["name"], search_answer, reviewer["name"], review_answer)
+                return {
+                    "provider": f"{search_provider['name']}+{reviewer['name']}",
+                    "answer": final_answer,
+                    "summary": final_answer,
+                }, responses, f"search_{search_index + 1}_review_{review_index + 1}_success"
+
+        final_answer = f"联合结论（{search_provider['name']}命中）：\n{search_answer}"
+        review_suffix = "all_reviewers_weak" if review_providers else "no_reviewer"
+        return {
+            "provider": search_provider["name"],
+            "answer": final_answer,
+            "summary": final_answer,
+        }, responses, f"search_{search_index + 1}_{review_suffix}"
+
+    miss_answer = "资料中未找到相关内容。"
+    provider_summary = "+".join(str(provider.get("name") or "") for provider in providers if provider.get("name")) or "multi"
+    return {
+        "provider": provider_summary,
+        "answer": miss_answer,
+        "summary": miss_answer,
+    }, responses, "ordered_no_hit"
+
+
+def _select_best_answer(prompt: str, responses: list[dict[str, Any]]) -> tuple[dict[str, Any], str]:
+    question = _extract_prompt_question(prompt)
+    local = _local_mock_response(prompt)
+    candidates = [row for row in responses if row.get("answer")]
+    if _is_substantive_local_answer(local.get("answer", "")):
+        candidates.append(local)
+    if not candidates:
+        return local, "all_remote_failed"
+
+    primary = max(candidates, key=lambda row: _answer_confidence_score(question, str(row.get("answer") or row.get("summary") or "")))
+    fallback_reason = ""
+    if primary.get("provider") == "本地规则" and any(row.get("provider") != "本地规则" for row in candidates):
+        fallback_reason = "local_outscored_remote"
+    return primary, fallback_reason
+
+
 async def run_joint_analysis(prompt: str) -> dict[str, Any]:
     providers = _configured_model_providers()
+    workflow_providers = _workflow_search_providers(providers)
+    diagnostics = {
+        "configured_provider_count": len(providers),
+        "configured_providers": [_provider_diagnostic(provider) for provider in providers],
+        "workflow_provider_order": [str(provider.get("name") or "") for provider in workflow_providers],
+        "local_fallback_mode": _local_fallback_mode(),
+    }
     if not providers:
         local = _local_mock_response(prompt)
-        return {**local, "responses": [local]}
+        logger.warning("AI 联合分析未发现可用 provider，直接使用本地规则兜底")
+        return {
+            **local,
+            "responses": [local],
+            "fallback_reason": "no_provider_configured",
+            "diagnostics": diagnostics,
+        }
 
-    async with httpx.AsyncClient(timeout=45) as client:
+    async with httpx.AsyncClient(timeout=None) as client:
+        if len(workflow_providers) >= 2:
+            primary_result, responses, flow_reason = await _run_prioritized_review_flow(client, prompt, workflow_providers)
+            result = {
+                "provider": primary_result["provider"],
+                "answer": primary_result["answer"],
+                "summary": primary_result["summary"],
+                "responses": responses,
+                "diagnostics": diagnostics,
+                "fallback_reason": flow_reason,
+            }
+            failed = [row for row in responses if row.get("errors")]
+            if failed:
+                result["errors"] = [error for row in failed for error in row.get("errors", [])]
+            return result
+
         responses = await asyncio.gather(*[_call_model_provider(client, provider, prompt) for provider in providers])
 
     successful = [row for row in responses if row.get("answer")]
     if not successful:
         local = _local_mock_response(prompt)
         responses.append(local)
+        logger.warning("AI 联合分析远端 provider 全部失败，已回退到本地规则")
         primary = local
+        fallback_reason = "all_remote_failed"
     else:
-        primary = successful[0]
+        primary, fallback_reason = _select_best_answer(prompt, successful)
+        if fallback_reason == "local_outscored_remote":
+            logger.info("AI 联合分析选择本地结构化答案作为主答案，原因是命中信号强于远端模型")
     result = {
         "provider": "multi" if len(responses) > 1 and primary.get("provider") != "本地规则" else primary.get("provider", "unknown"),
         "answer": primary.get("answer", primary.get("summary", "")),
         "summary": primary.get("summary", primary.get("answer", "")),
         "responses": responses,
+        "diagnostics": diagnostics,
     }
     if not successful:
         result["errors"] = [error for row in responses for error in row.get("errors", [])]
+    if fallback_reason:
+        result["fallback_reason"] = fallback_reason
     return result
