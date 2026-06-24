@@ -10,3 +10,4 @@ openpyxl
 xlrd
 xlwt
 Pillow
+lightrag-hku[api] @ git+https://github.com/HKUDS/LightRAG.git

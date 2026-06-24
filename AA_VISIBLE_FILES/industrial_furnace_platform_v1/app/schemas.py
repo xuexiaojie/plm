@@ -30,6 +30,10 @@ class ProjectManagementBatchCreate(BaseModel):
     items: list[ProjectManagementCreate]
 
 
+class ProjectManagerCandidateCreate(BaseModel):
+    name: str
+
+
 class PermissionAssignment(BaseModel):
     permissions: list[str]
 

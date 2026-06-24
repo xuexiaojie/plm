@@ -27,7 +27,8 @@ SYSTEM_PROMPT = """你是工业炉项目资料问答助手。
 5. 资料中出现“当前版本仅支持自动解析 .docx 和文本类附件正文”或“当前版本只能直接读取文本类附件正文”时，说明这是旧版上传记录，应提示用户重新上传原文件。
 6. 资料里找不到答案时，明确回答“资料中未找到相关内容”。
 7. 不要编造，不要把资料清单伪装成结论。
-8. 如果提供了 <draft_answer>，你需要基于资料核对这份草稿；资料支持时给出修正版或确认版，资料不支持时明确回答“资料中未找到相关内容”。"""
+8. 如果提供了 <draft_answer>，你需要基于资料核对这份草稿；资料支持时给出修正版或确认版，资料不支持时明确回答“资料中未找到相关内容”。
+9. 图号类问题只有在“问题中的目标对象名称”和“图号字段”同时出现在同一条命中资料时才允许回答；相似对象名称不能替代，例如“步进梁四”与“固定梁四”必须视为不同对象。"""
 
 
 def _normalize_text(value: str) -> str:
@@ -41,6 +42,22 @@ def _split_sentences(text: str) -> list[str]:
 
 def _contains_any(text: str, keywords: tuple[str, ...]) -> bool:
     return any(keyword in text for keyword in keywords)
+
+
+def _dedupe_artifacts(rows: list[dict]) -> list[dict]:
+    seen: set[tuple[Any, str, str]] = set()
+    ordered: list[dict] = []
+    for row in rows:
+        key = (
+            row.get("artifact_id"),
+            str(row.get("title") or ""),
+            str(row.get("source_code") or ""),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(row)
+    return ordered
 
 
 def _fallback_keywords(question: str) -> list[str]:
@@ -184,6 +201,8 @@ def _is_parameter_table_question(question: str) -> bool:
         return True
     if _contains_any(question, ("方坯尺寸", "坯料尺寸", "钢坯尺寸", "坯料规格", "方坯规格", "坯料断面")):
         return True
+    if _contains_any(question, ("出炉温度", "入炉温度", "燃料种类", "支撑梁冷却方式", "进出料方式")):
+        return True
     if any(field in question for field in TABLE_FIELDS):
         return True
     return any(any(alias in question for alias in aliases) for aliases in TABLE_FIELD_ALIASES.values())
@@ -192,6 +211,71 @@ def _is_parameter_table_question(question: str) -> bool:
 def _is_doc_number_question(question: str) -> bool:
     lowered = question.lower()
     return "图号" in question or "doc. no" in lowered or "doc no" in lowered
+
+
+def _is_word_like_artifact(artifact: dict) -> bool:
+    title = str(artifact.get("title") or "").lower()
+    content = str(artifact.get("content") or artifact.get("content_preview") or "")
+    type_name = str(artifact.get("type_name") or artifact.get("type") or "")
+    return title.endswith(".docx") or "已解析 Word 正文" in content or type_name in {"技术说明", "technical_description"}
+
+
+def _is_table_like_artifact(artifact: dict) -> bool:
+    title = str(artifact.get("title") or "")
+    content = str(artifact.get("content") or artifact.get("content_preview") or "")
+    if "技术性能表" in title:
+        return True
+    if "技术性能项目名称" in content:
+        return True
+    if "技术性能表" in content and not _artifact_explicitly_negates_question("技术性能表", content):
+        return True
+    return False
+
+
+def _artifact_matches_question(artifact: dict, question: str) -> bool:
+    text = _normalize_text(f"{artifact.get('title') or ''} {artifact.get('source_code') or ''} {artifact.get('content') or artifact.get('content_preview') or ''}")
+    keywords = [keyword for keyword in _fallback_keywords(question) if len(keyword) >= 2]
+    if not keywords:
+        return True
+    return any(keyword in text for keyword in keywords)
+
+
+def _ordered_question_artifacts(question: str, retrieved_artifacts: list[dict], artifacts: list[dict]) -> list[dict]:
+    base_rows = _dedupe_artifacts(list(artifacts or []) + list(retrieved_artifacts or []))
+    if not base_rows:
+        return []
+    matched_rows = [row for row in base_rows if _artifact_matches_question(row, question)]
+    rows = matched_rows or base_rows
+    if _is_parameter_table_question(question) or _contains_any(question, ("出炉温度", "入炉温度", "炉底机械传动", "支撑梁冷却方式")):
+        table_rows = [row for row in rows if _is_table_like_artifact(row)]
+        return table_rows or rows
+    if _contains_any(question, ("冷却水", "管路", "操作", "维护", "注意事项", "巡检", "检修")):
+        word_rows = [row for row in rows if _is_word_like_artifact(row)]
+        return word_rows or rows
+    return rows
+
+
+def _split_user_questions(question: str) -> list[str]:
+    parts = [segment.strip() for segment in re.split(r"[？?]+", str(question or ""))]
+    rows = [part for part in parts if part]
+    return rows or ([str(question).strip()] if str(question or "").strip() else [])
+
+
+def _doc_question_targets(question: str) -> list[str]:
+    normalized = _normalize_text(question)
+    if not normalized:
+        return []
+    matched = re.search(r"(.+?)(?:的)?图号", normalized)
+    if not matched:
+        return []
+    full_target = matched.group(1).strip(" ：:，,。. ")
+    candidates = [full_target] if full_target else []
+    for marker in ("项目", "工程", "公司", "产线", "加热炉"):
+        if marker in full_target:
+            tail = full_target.rsplit(marker, 1)[-1].strip()
+            if len(tail) >= 2:
+                candidates.append(tail)
+    return list(dict.fromkeys(candidate for candidate in candidates if candidate))
 
 
 TABLE_FIELDS = [
@@ -302,13 +386,28 @@ def _extract_doc_number(text: str) -> tuple[str, str]:
 
 
 def _doc_number_answer(question: str, retrieved_artifacts: list[dict]) -> str:
+    targets = _doc_question_targets(question)
     for artifact in retrieved_artifacts:
-        value, snippet = _extract_doc_number(str(artifact.get("content") or ""))
+        content = _normalize_text(str(artifact.get("content") or ""))
+        if targets and not any(target in content for target in targets):
+            continue
+        value, snippet = _extract_doc_number(content)
         if not value:
             continue
         source_name = f"{artifact.get('type_name') or '项目资料'}《{artifact.get('title') or '未命名资料'}》"
         return f"根据{source_name}，当前命中的图号是“{value}”。资料片段：{snippet}"
     return ""
+
+
+def _doc_question_has_target_hit(question: str, retrieved_artifacts: list[dict], artifacts: list[dict]) -> bool:
+    targets = _doc_question_targets(question)
+    if not targets:
+        return True
+    for row in [*(retrieved_artifacts or []), *(artifacts or [])]:
+        content = _normalize_text(f"{row.get('title') or ''} {row.get('content') or row.get('content_preview') or ''}")
+        if any(target in content for target in targets):
+            return True
+    return False
 
 
 def _group_artifact_insights(question: str, retrieved_artifacts: list[dict]) -> list[tuple[str, list[str]]]:
@@ -395,25 +494,21 @@ def _build_evidence_candidates(question: str, retrieved_artifacts: list[dict]) -
     return rows[:12]
 
 
-def _artifact_answer(prompt: str) -> str:
-    try:
-        data = json.loads(prompt)
-    except json.JSONDecodeError:
-        return "没有读取到可用于回答的项目资料。"
-    question = str(data.get("question") or "").strip()
-    retrieved_artifacts = data.get("retrieved_artifacts") or []
-    if retrieved_artifacts:
-        structured = _structured_artifact_answer(question, retrieved_artifacts)
+def _artifact_answer_for_single_question(question: str, retrieved_artifacts: list[dict], artifacts: list[dict]) -> str:
+    scoped_artifacts = _ordered_question_artifacts(question, retrieved_artifacts, artifacts)
+    if _is_doc_number_question(question) and not _doc_question_has_target_hit(question, scoped_artifacts, scoped_artifacts):
+        return "资料中未找到相关内容。"
+    if scoped_artifacts:
+        structured = _structured_artifact_answer(question, scoped_artifacts)
         if structured:
             return structured
-        if all(_artifact_explicitly_negates_question(question, str(artifact.get("content") or "")) for artifact in retrieved_artifacts):
+        if all(_artifact_explicitly_negates_question(question, str(artifact.get("content") or "")) for artifact in scoped_artifacts):
             return "当前项目资料里没有检索到与这个问题直接相关的内容。请换一个更具体的关键词，或先在资料查询里确认相关文件。"
         answer_lines = [f"根据当前项目中已检索到的资料，针对“{question or '当前问题'}”可以看到："]
-        for index, artifact in enumerate(retrieved_artifacts[:8], start=1):
+        for index, artifact in enumerate(scoped_artifacts[:8], start=1):
             snippet = _normalize_text(str(artifact.get("content") or ""))[:220]
             answer_lines.append(f"{index}. {artifact.get('type_name') or '项目资料'}《{artifact.get('title') or '未命名资料'}》：{snippet or '未读取到资料内容'}")
         return "\n".join(answer_lines)
-    artifacts = data.get("artifacts") or []
     if not artifacts:
         return "项目资料中还没有可用于回答这个问题的内容。请先在项目资料里上传相关文字或文件说明。"
     matched = []
@@ -438,6 +533,26 @@ def _artifact_answer(prompt: str) -> str:
     if not matched:
         answer_lines.append("当前问题没有命中检索结果，以下内容来自当前项目资料的兜底整理。")
     return "\n".join(answer_lines)
+
+
+def _artifact_answer(prompt: str) -> str:
+    try:
+        data = json.loads(prompt)
+    except json.JSONDecodeError:
+        return "没有读取到可用于回答的项目资料。"
+    question = str(data.get("question") or "").strip()
+    retrieved_artifacts = data.get("retrieved_artifacts") or []
+    artifacts = data.get("artifacts") or []
+    questions = _split_user_questions(question)
+    if len(questions) <= 1:
+        return _artifact_answer_for_single_question(question, retrieved_artifacts, artifacts)
+    lines = []
+    for index, sub_question in enumerate(questions, start=1):
+        sub_answer = _artifact_answer_for_single_question(sub_question, retrieved_artifacts, artifacts)
+        if sub_answer.startswith("针对“"):
+            sub_answer = "资料中未找到相关内容。"
+        lines.append(f"{index}. {sub_question}\n{sub_answer}")
+    return "\n\n".join(lines)
 
 
 def _parse_model_candidates(value: str, primary_model: str) -> list[str]:
@@ -818,6 +933,26 @@ def _extract_prompt_question(prompt: str) -> str:
     return str(data.get("question") or data.get("original_question") or "").strip()
 
 
+def _prompt_payload(prompt: str) -> dict[str, Any]:
+    try:
+        data = json.loads(prompt)
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _analysis_type(prompt: str) -> str:
+    return str(_prompt_payload(prompt).get("analysis_type") or "").strip().lower()
+
+
+def _is_knowledge_lookup_mode(prompt: str) -> bool:
+    return _analysis_type(prompt) in {"knowledge_lookup", "ai_query", "plm_ai_query"}
+
+
+def _is_plm_smart_analysis_mode(prompt: str) -> bool:
+    return _analysis_type(prompt) in {"plm_smart_analysis", "ai_smart_analysis"}
+
+
 def _is_substantive_local_answer(answer: str) -> bool:
     text = _normalize_text(answer)
     if not text:
@@ -987,11 +1122,140 @@ def _build_review_prompt(prompt: str, draft_answer: str, reviewer_name: str) -> 
     return json.dumps(data, ensure_ascii=False)
 
 
+def _build_knowledge_lookup_prompt(prompt: str, provider_name: str) -> str:
+    data = _prompt_payload(prompt) or {"question": _extract_prompt_question(prompt)}
+    data["draft_answer"] = _artifact_answer(prompt)
+    data["review_mode"] = (
+        f"请基于资料严格复核这份草稿。审核角色：{provider_name}。"
+        "你只能依据当前资料修正草稿，不能补充相似项目、相近设备、其他项目或推测信息。"
+        "当草稿某条已经写明‘资料中未找到相关内容’时，保持该结论。"
+        "只有资料明确支持同一对象、同一项目、同一参数时，才允许把该条改成肯定答案。"
+    )
+    return json.dumps(data, ensure_ascii=False)
+
+
+def _build_smart_instruction_prompt(prompt: str) -> str:
+    data = _prompt_payload(prompt) or {"question": _extract_prompt_question(prompt)}
+    data["review_mode"] = "请先整理 AI 智能分析的固定输出目录，只能使用以下分类：能量流分析、物质流分析、信息流分析、周期分析、经济效益分析。不要新增自定义分类。"
+    return json.dumps(data, ensure_ascii=False)
+
+
+def _build_smart_numeric_prompt(prompt: str, structure_hint: str) -> str:
+    data = _prompt_payload(prompt) or {"question": _extract_prompt_question(prompt)}
+    if structure_hint.strip():
+        data["structure_hint"] = structure_hint.strip()
+    data["review_mode"] = "请优先完成量化推演和横向比对，复用执行结果、图像和资料，输出差值、关键判断和优化建议。"
+    return json.dumps(data, ensure_ascii=False)
+
+
+def _build_smart_optimization_prompt(prompt: str, numeric_answer: str) -> str:
+    data = _prompt_payload(prompt) or {"question": _extract_prompt_question(prompt)}
+    data["draft_answer"] = numeric_answer
+    data["review_mode"] = "请基于已有量化结果补充备选优化方向，聚焦布局差异、工况差异和可执行的优化建议。"
+    return json.dumps(data, ensure_ascii=False)
+
+
+def _build_smart_format_prompt(prompt: str, numeric_answer: str, optimization_answer: str) -> str:
+    data = _prompt_payload(prompt) or {"question": _extract_prompt_question(prompt)}
+    combined = str(numeric_answer or "").strip()
+    if optimization_answer.strip():
+        combined = f"{combined}\n\n备选优化方向：\n{optimization_answer.strip()}".strip()
+    data["draft_answer"] = combined
+    data["review_mode"] = "请校验并整理最终输出格式，严格匹配既定目录：能量流分析、物质流分析、信息流分析、周期分析、经济效益分析。"
+    return json.dumps(data, ensure_ascii=False)
+
+
 def _merge_joint_answer(primary_provider: str, primary_answer: str, reviewer_provider: str, reviewer_answer: str) -> str:
     primary_score = len(str(primary_answer or "").strip())
     reviewer_score = len(str(reviewer_answer or "").strip())
     best_answer = reviewer_answer if reviewer_score > primary_score else primary_answer
     return f"联合结论（{primary_provider}初判，{reviewer_provider}复核）：\n{best_answer}"
+
+
+def _pick_provider(providers: list[dict[str, Any]], token: str) -> dict[str, Any] | None:
+    for provider in providers:
+        if _provider_matches_token(provider, token):
+            return provider
+    return None
+
+
+async def _run_knowledge_lookup_flow(client: httpx.AsyncClient, prompt: str, providers: list[dict[str, Any]]) -> tuple[dict[str, Any], list[dict[str, Any]], str]:
+    deepseek_provider = _pick_provider(providers, "deepseek")
+    if deepseek_provider is None:
+        miss_answer = "当前未配置 DeepSeek，无法执行 AI 查询检索。"
+        return {
+            "provider": "本地规则",
+            "answer": miss_answer,
+            "summary": miss_answer,
+        }, [], "knowledge_lookup_provider_missing"
+    draft_answer = _artifact_answer(prompt)
+    response = await _call_model_provider(client, deepseek_provider, _build_knowledge_lookup_prompt(prompt, str(deepseek_provider.get("name") or "DeepSeek")))
+    response["workflow_role"] = "knowledge_lookup"
+    answer = str(response.get("answer") or response.get("summary") or "").strip() or "资料中未找到相关内容。"
+    if "资料中未找到相关内容" in draft_answer:
+        answer = draft_answer
+        response["answer"] = draft_answer
+        response["summary"] = draft_answer
+    return {
+        "provider": str(response.get("provider") or deepseek_provider.get("name") or "DeepSeek"),
+        "answer": answer,
+        "summary": answer,
+    }, [response], "knowledge_lookup_deepseek_only"
+
+
+async def _run_plm_smart_analysis_flow(client: httpx.AsyncClient, prompt: str, providers: list[dict[str, Any]]) -> tuple[dict[str, Any], list[dict[str, Any]], str]:
+    responses: list[dict[str, Any]] = []
+    zhipu_provider = _pick_provider(providers, "zhipu") or _pick_provider(providers, "glm") or _pick_provider(providers, "bigmodel")
+    deepseek_provider = _pick_provider(providers, "deepseek")
+    volc_provider = _pick_provider(providers, "volcengine")
+
+    structure_hint = ""
+    if zhipu_provider is not None:
+        instruction = await _call_model_provider(client, zhipu_provider, _build_smart_instruction_prompt(prompt))
+        instruction["workflow_role"] = "instruction_planner"
+        responses.append(instruction)
+        structure_hint = str(instruction.get("answer") or "").strip()
+
+    if deepseek_provider is None:
+        miss_answer = "当前未配置 DeepSeek，无法完成 AI 智能分析数值推演。"
+        return {
+            "provider": "本地规则",
+            "answer": miss_answer,
+            "summary": miss_answer,
+        }, responses, "smart_analysis_missing_deepseek"
+
+    numeric = await _call_model_provider(client, deepseek_provider, _build_smart_numeric_prompt(prompt, structure_hint))
+    numeric["workflow_role"] = "numeric_analyst"
+    responses.append(numeric)
+    numeric_answer = str(numeric.get("answer") or numeric.get("summary") or "").strip()
+
+    optimization_answer = ""
+    if volc_provider is not None and numeric_answer:
+        optimization = await _call_model_provider(client, volc_provider, _build_smart_optimization_prompt(prompt, numeric_answer))
+        optimization["workflow_role"] = "optimization_expander"
+        responses.append(optimization)
+        optimization_answer = str(optimization.get("answer") or optimization.get("summary") or "").strip()
+
+    if zhipu_provider is not None and numeric_answer:
+        format_review = await _call_model_provider(client, zhipu_provider, _build_smart_format_prompt(prompt, numeric_answer, optimization_answer))
+        format_review["workflow_role"] = "format_reviewer"
+        responses.append(format_review)
+        final_answer = str(format_review.get("answer") or "").strip()
+        if final_answer:
+            return {
+                "provider": f"{deepseek_provider['name']}+{zhipu_provider['name']}",
+                "answer": final_answer,
+                "summary": final_answer,
+            }, responses, "smart_analysis_full_chain"
+
+    combined = numeric_answer or "资料中未找到相关内容。"
+    if optimization_answer:
+        combined = f"{combined}\n\n备选优化方向：\n{optimization_answer}"
+    return {
+        "provider": deepseek_provider["name"],
+        "answer": combined,
+        "summary": combined,
+    }, responses, "smart_analysis_partial_chain"
 
 
 async def _run_prioritized_review_flow(client: httpx.AsyncClient, prompt: str, providers: list[dict[str, Any]]) -> tuple[dict[str, Any], list[dict[str, Any]], str]:
@@ -1057,8 +1321,15 @@ def _select_best_answer(prompt: str, responses: list[dict[str, Any]]) -> tuple[d
 
 async def run_joint_analysis(prompt: str) -> dict[str, Any]:
     providers = _configured_model_providers()
-    workflow_providers = _workflow_search_providers(providers)
+    analysis_type = _analysis_type(prompt)
+    if _is_knowledge_lookup_mode(prompt):
+        workflow_providers = [provider for provider in providers if _provider_matches_token(provider, "deepseek")]
+    elif _is_plm_smart_analysis_mode(prompt):
+        workflow_providers = _order_providers_by_tokens(providers, ["zhipu", "deepseek", "volcengine"])
+    else:
+        workflow_providers = _workflow_search_providers(providers)
     diagnostics = {
+        "analysis_type": analysis_type or "default",
         "configured_provider_count": len(providers),
         "configured_providers": [_provider_diagnostic(provider) for provider in providers],
         "workflow_provider_order": [str(provider.get("name") or "") for provider in workflow_providers],
@@ -1075,6 +1346,36 @@ async def run_joint_analysis(prompt: str) -> dict[str, Any]:
         }
 
     async with httpx.AsyncClient(timeout=None) as client:
+        if _is_knowledge_lookup_mode(prompt):
+            primary_result, responses, flow_reason = await _run_knowledge_lookup_flow(client, prompt, providers)
+            result = {
+                "provider": primary_result["provider"],
+                "answer": primary_result["answer"],
+                "summary": primary_result["summary"],
+                "responses": responses,
+                "diagnostics": diagnostics,
+                "fallback_reason": flow_reason,
+            }
+            failed = [row for row in responses if row.get("errors")]
+            if failed:
+                result["errors"] = [error for row in failed for error in row.get("errors", [])]
+            return result
+
+        if _is_plm_smart_analysis_mode(prompt):
+            primary_result, responses, flow_reason = await _run_plm_smart_analysis_flow(client, prompt, providers)
+            result = {
+                "provider": primary_result["provider"],
+                "answer": primary_result["answer"],
+                "summary": primary_result["summary"],
+                "responses": responses,
+                "diagnostics": diagnostics,
+                "fallback_reason": flow_reason,
+            }
+            failed = [row for row in responses if row.get("errors")]
+            if failed:
+                result["errors"] = [error for row in failed for error in row.get("errors", [])]
+            return result
+
         if len(workflow_providers) >= 2:
             primary_result, responses, flow_reason = await _run_prioritized_review_flow(client, prompt, workflow_providers)
             result = {

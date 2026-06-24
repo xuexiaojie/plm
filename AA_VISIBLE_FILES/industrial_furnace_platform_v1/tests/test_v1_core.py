@@ -117,7 +117,6 @@ def test_index_page_loads_console():
         "数字孪生",
         "流程分析",
         "AI 查询",
-        "AI 智能分析",
         "权限分配",
         "调试信息",
     ]
@@ -135,8 +134,14 @@ def test_index_page_loads_console():
         "setAiViewMode",
         "renderFlowAnalysis",
         "能量流分析",
-        "信息流分析",
-        "质量流分析",
+        "热平衡分析",
+        "水冷、汽化分析",
+        "液压分析",
+        "强电能量分析",
+        "flowEnergyBranch",
+        "saveHeatBalanceReport",
+        "热平衡图",
+        "加热炉热利用率",
         "错误码：",
         "错误信息：",
         "ok-fill",
@@ -238,6 +243,150 @@ def test_run_joint_analysis_runs_volc_then_deepseek_review(tmp_path, monkeypatch
     assert result["diagnostics"]["configured_provider_count"] == 3
     assert result["diagnostics"]["workflow_provider_order"] == ["火山大模型", "DeepSeek", "智谱清言"]
     assert result["fallback_reason"] == "search_1_review_1_success"
+
+
+def test_run_joint_analysis_uses_deepseek_only_for_knowledge_lookup(tmp_path, monkeypatch):
+    monkeypatch.setattr(runtime_config_module, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(runtime_config_module, "WORKSPACE_TMP_DIR", tmp_path / "_missing_tmp_dir")
+    for key in runtime_config_module.AI_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("AI_API_URL", "https://deepseek.example/v1/chat/completions")
+    monkeypatch.setenv("AI_API_KEY", "deepseek-key")
+    monkeypatch.setenv("AI_MODEL", "deepseek-chat")
+    monkeypatch.setenv("CLAUDE_API_URL", "https://zhipu.example/v4/chat/completions")
+    monkeypatch.setenv("CLAUDE_API_KEY", "zhipu-key")
+    monkeypatch.setenv("CLAUDE_MODEL", "glm-5.1")
+    monkeypatch.setenv("CLAUDE_PROVIDER_NAME", "智谱清言")
+    monkeypatch.setenv("CLAUDE_API_TYPE", "openai")
+    monkeypatch.setenv("TENCENT_API_URL", "https://volc.example/api/v3/chat/completions")
+    monkeypatch.setenv("TENCENT_API_KEY", "volc-key")
+    monkeypatch.setenv("TENCENT_MODEL", "doubao-seed-2-0-lite-260428")
+    monkeypatch.setenv("TENCENT_PROVIDER_NAME", "火山大模型")
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, json=None, headers=None):
+            if "deepseek.example" not in url:
+                raise AssertionError("AI 查询只应调用 DeepSeek")
+            return FakeResponse({"choices": [{"message": {"content": "根据技术性能表，出炉温度为 980～1150℃。"}}]})
+
+    monkeypatch.setattr(ai_client_module.httpx, "AsyncClient", FakeAsyncClient)
+
+    result = asyncio.run(
+        ai_client_module.run_joint_analysis(
+            json.dumps(
+                {
+                    "analysis_type": "knowledge_lookup",
+                    "question": "356m2步双蓄热步进梁式加热炉的出炉温度是多少？",
+                    "retrieved_artifacts": [],
+                    "artifacts": [],
+                },
+                ensure_ascii=False,
+            )
+        )
+    )
+
+    assert result["provider"] == "DeepSeek"
+    assert result["fallback_reason"] == "knowledge_lookup_deepseek_only"
+    assert result["diagnostics"]["analysis_type"] == "knowledge_lookup"
+    assert result["diagnostics"]["workflow_provider_order"] == ["DeepSeek"]
+    assert len(result["responses"]) == 1
+    assert result["responses"][0]["workflow_role"] == "knowledge_lookup"
+
+
+def test_artifact_answer_does_not_confuse_bujinliang_with_gudingliang_doc_number():
+    prompt = json.dumps(
+        {
+            "question": "福建罗源闽光钢铁有限责任公司年产130万吨高速线材生产项目步进梁四的图号是多少？",
+            "retrieved_artifacts": [
+                {
+                    "type_name": "现场反馈",
+                    "title": "现场反馈-6",
+                    "content": "固定梁四 图号: DL11429-6c 支撑梁制造图",
+                }
+            ],
+            "artifacts": [],
+        },
+        ensure_ascii=False,
+    )
+
+    answer = ai_client_module._artifact_answer(prompt)
+
+    assert "DL11429-6c" not in answer
+    assert "资料中未找到相关内容" in answer
+
+
+def test_artifact_answer_prefers_word_like_documents_for_cooling_water_question():
+    prompt = json.dumps(
+        {
+            "question": "加热炉冷却水管路设计及操作维护需注意事项？",
+            "retrieved_artifacts": [
+                {
+                    "type_name": "现场反馈",
+                    "title": "现场反馈-1",
+                    "content": "这份记录提到地坑施工和照明问题。",
+                },
+                {
+                    "type_name": "技术说明",
+                    "title": "加热炉冷却水管路设计说明.docx",
+                    "content": "已解析 Word 正文 冷却水管路设计应关注管径匹配、排空点和检修阀门布置。运行维护阶段要定期巡检泄漏点并清理过滤器。",
+                },
+            ],
+            "artifacts": [],
+        },
+        ensure_ascii=False,
+    )
+
+    answer = ai_client_module._artifact_answer(prompt)
+
+    assert "管径匹配" in answer
+    assert "清理过滤器" in answer
+    assert "地坑施工" not in answer
+
+
+def test_artifact_answer_prefers_parameter_table_for_exit_temperature_question():
+    prompt = json.dumps(
+        {
+            "question": "356m2步双蓄热步进梁式加热炉的出炉温度是多少？",
+            "retrieved_artifacts": [
+                {
+                    "type_name": "技术说明",
+                    "title": "加热炉冷却水说明",
+                    "content": "这份资料讲的是加热炉冷却水管路和操作维护，和设备技术性能表无关。",
+                },
+                {
+                    "type_name": "技术说明",
+                    "title": "IF000396c-技术性能表",
+                    "content": "356m2步双蓄热步进梁式加热炉 技术性能表 技术性能项目名称 技术参数 出炉温度 980～1150 燃料种类 高炉煤气",
+                },
+            ],
+            "artifacts": [],
+        },
+        ensure_ascii=False,
+    )
+
+    answer = ai_client_module._artifact_answer(prompt)
+
+    assert "出炉温度：980～1150" in answer
+    assert "冷却水管路" not in answer
 
 
 def test_run_joint_analysis_returns_no_hit_when_deepseek_and_zhipu_both_miss(tmp_path, monkeypatch):
@@ -931,6 +1080,39 @@ def test_execute_normal_case_returns_feasible_result():
     assert payload["success"] is True
     assert payload["feasible"] is True
     assert payload["outputs"]["surface_core_delta_c"] <= 5
+
+
+def test_execute_creates_draft_report_automatically():
+    init_db()
+    client.post("/api/seed")
+    project_id = client.get("/api/projects").json()[0]["id"]
+    item_id = client.get(f"/api/projects/{project_id}/items").json()[0]["id"]
+    calc_node = next(node for node in client.get(f"/api/items/{item_id}/nodes").json() if node["node_type"] == "calc")
+
+    response = client.post(
+        f"/api/nodes/{calc_node['id']}/executions",
+        headers={"X-Role": "engineer", "X-User-Id": "11"},
+        json={
+            "inputs": {
+                "material_type": "carbon_steel",
+                "workpiece_thickness_mm": 120,
+                "initial_temp_c": 25,
+                "target_discharge_temp_c": 1180,
+                "residence_time_min": 180,
+            }
+        },
+    )
+    assert response.status_code == 200
+
+    db = SessionLocal()
+    execution = db.query(models.CalcExecution).order_by(models.CalcExecution.id.desc()).first()
+    reports = db.query(models.GeneratedReport).filter_by(execution_id=execution.id).order_by(models.GeneratedReport.id.asc()).all()
+    db.close()
+
+    assert len(reports) == 1
+    assert reports[0].status == "DRAFT"
+    assert reports[0].version == "1.0"
+    assert reports[0].watermark == "草稿 / 张工"
 
 
 def test_execute_infeasible_case_keeps_real_violation():

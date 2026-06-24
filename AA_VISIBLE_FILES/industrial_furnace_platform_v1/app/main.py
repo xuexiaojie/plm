@@ -49,7 +49,9 @@ from app.seed import seed_all
 
 BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_DIR = BASE_DIR.parent / "uploaded_artifacts"
+INDEX_HTML_PATH = BASE_DIR / "static" / "index.html"
 _cached_index_html = ""
+_cached_index_mtime_ns = 0
 logger = logging.getLogger(__name__)
 
 
@@ -58,18 +60,28 @@ def utc_now() -> datetime:
 
 
 def _build_index_html() -> str:
-    with open(BASE_DIR / "static" / "index.html", encoding="utf-8") as page:
-        html = page.read().replace("AI 联合分析", "AI 问答")
+    with open(INDEX_HTML_PATH, encoding="utf-8") as page:
+        html = page.read()
         html = html.replace('id="artifactFileSummary" class="meta">可一次选择多个文档、图片或视频。', 'id="artifactFileSummary" class="meta">可一次选择多个文档、图片或视频。.docx、.xls、.xlsx、PDF 和文本类附件会自动读取正文，图片会提取元信息。')
         html = html.replace('id="artifactBatchDocSummary" class="meta">只支持文档文件，每个文档将生成一个资料条目。', 'id="artifactBatchDocSummary" class="meta">只支持文档文件，每个文档将生成一个资料条目。.docx、.xls、.xlsx、PDF 和文本类附件会自动读取正文。')
         return html
 
 
+def _get_index_html() -> str:
+    global _cached_index_html, _cached_index_mtime_ns
+    current_mtime_ns = INDEX_HTML_PATH.stat().st_mtime_ns
+    if not _cached_index_html or current_mtime_ns != _cached_index_mtime_ns:
+        _cached_index_html = _build_index_html()
+        _cached_index_mtime_ns = current_mtime_ns
+    return _cached_index_html
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _cached_index_html
+    global _cached_index_html, _cached_index_mtime_ns
     init_db()
     _cached_index_html = _build_index_html()
+    _cached_index_mtime_ns = INDEX_HTML_PATH.stat().st_mtime_ns
     db = SessionLocal()
     try:
         _clear_legacy_artifact_retrieval_state(db)
@@ -103,7 +115,7 @@ PERMISSION_CATALOG = [
     {"code": "report:download", "name": "下载报告", "description": "下载已生成报告文本"},
     {"code": "comparison:create", "name": "横向对比", "description": "创建和查看横向对比组"},
     {"code": "artifact:manage", "name": "资料管理", "description": "新增和批量录入项目资料"},
-    {"code": "ai:analyze", "name": "AI 问答", "description": "根据项目资料回答问题"},
+    {"code": "ai:analyze", "name": "AI 分析", "description": "执行 AI 查询和 AI 智能分析"},
     {"code": "template:manage", "name": "模板管理", "description": "维护计算模板和算法入口"},
     {"code": "permission:assign", "name": "权限分配", "description": "维护角色权限配置"},
 ]
@@ -172,7 +184,7 @@ PASTED_IMAGE_SUMMARY_LIMIT = 500
 @app.get("/", response_class=HTMLResponse)
 def index() -> HTMLResponse:
     return HTMLResponse(
-        content=_cached_index_html or _build_index_html(),
+        content=_get_index_html(),
         headers={
             "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
             "Pragma": "no-cache",
@@ -555,6 +567,27 @@ def _tokenize_search_terms(text: str) -> list[str]:
     return sorted(tokens, key=lambda token: (-len(token), token))
 
 
+def _search_query_variants(question: str) -> list[str]:
+    raw = (question or "").strip()
+    if not raw:
+        return []
+    variants = [raw]
+    normalized = raw.replace("出路温度", "出炉温度")
+    if normalized != raw:
+        variants.append(normalized)
+    if any(term in normalized for term in ("出炉温度", "入炉温度", "坯料断面", "炉底机械传动", "支撑梁冷却方式", "图号")):
+        variants.append(f"{normalized} 技术性能表")
+    keywords = _tokenize_search_terms(normalized)
+    if keywords:
+        variants.append(" ".join(keywords[:6]))
+    deduped: list[str] = []
+    for variant in variants:
+        compact = variant.strip()
+        if compact and compact not in deduped:
+            deduped.append(compact)
+    return deduped
+
+
 def _artifact_search_text(artifact: models.ProjectArtifact) -> str:
     return "\n".join([artifact.title or "", artifact.source_code or "", artifact.content or ""]).lower()
 
@@ -580,6 +613,26 @@ def _artifact_ai_content(text: str, keywords: list[str], limit: int = 8000) -> s
     if len(compact) <= limit:
         return compact
     return _artifact_excerpt(compact, keywords, limit=2200)
+
+
+def _merge_retrieved_rows(row_groups: list[list[dict]], limit: int = 8) -> list[dict]:
+    merged: dict[int, dict] = {}
+    for row_group in row_groups:
+        for row in row_group:
+            artifact_id = int(row.get("artifact_id") or 0)
+            if artifact_id <= 0:
+                continue
+            score = int(row.get("score") or 0)
+            provider_bonus = 5 if row.get("retrieval_provider") == "lightrag" else 0
+            total_score = score + provider_bonus
+            existing = merged.get(artifact_id)
+            candidate = {**row, "score": total_score}
+            if existing is None or total_score > int(existing.get("score") or 0):
+                merged[artifact_id] = candidate
+            elif total_score == int(existing.get("score") or 0):
+                if len(str(row.get("content") or "")) > len(str(existing.get("content") or "")):
+                    merged[artifact_id] = candidate
+    return sorted(merged.values(), key=lambda row: (int(row.get("score") or 0), int(row.get("artifact_id") or 0)), reverse=True)[:limit]
 
 
 def _search_project_artifacts(db: Session, project_id: int, question: str, artifact_ids: list[int], limit: int = 8) -> list[dict]:
@@ -650,6 +703,8 @@ async def _search_project_artifacts_for_ai(db: Session, project_id: int, questio
         query = query.filter(models.ProjectArtifact.id.in_(artifact_ids))
     artifacts = query.order_by(models.ProjectArtifact.id.desc()).all()
 
+    row_groups: list[list[dict]] = []
+
     try:
         lightrag_rows = await search_with_lightrag(project_id, question, artifacts, limit=limit)
     except Exception:
@@ -658,9 +713,17 @@ async def _search_project_artifacts_for_ai(db: Session, project_id: int, questio
         if lightrag_rows:
             for row in lightrag_rows:
                 row["type_name"] = ARTIFACT_TYPES.get(row.get("type"), row.get("type"))
-            return lightrag_rows
+            row_groups.append(lightrag_rows)
 
     selected_ids = [artifact.id for artifact in artifacts]
+    for variant in _search_query_variants(question):
+        keyword_rows = _search_project_artifacts(db, project_id, variant, selected_ids, limit=limit)
+        if keyword_rows:
+            row_groups.append(keyword_rows)
+
+    merged = _merge_retrieved_rows(row_groups, limit=limit)
+    if merged:
+        return merged
     return _search_project_artifacts(db, project_id, question, selected_ids, limit=limit)
 
 
@@ -1141,6 +1204,7 @@ def execute_node(
     payload: ExecutionRequest,
     db: Session = Depends(get_db),
     role: str = Depends(permission_dependency("execution:run")),
+    current_user: dict = Depends(get_current_user),
 ) -> ExecutorResponse:
     node = db.get(models.CalcNode, node_id)
     if node is None or node.template_id is None:
@@ -1183,6 +1247,7 @@ def execute_node(
             logs_json=json.dumps(response.logs, ensure_ascii=False),
         )
     )
+    _create_draft_report(db, execution, str(current_user.get("name") or "系统"))
     db.commit()
     return response
 
@@ -1291,6 +1356,20 @@ def _report_version(db: Session, execution_id: int) -> str:
 
 def _build_report_file_path(execution: models.CalcExecution, version: str) -> str:
     return f"storage/projects/{execution.project_id}/reports/{execution.execution_no}-v{version}.txt"
+
+
+def _create_draft_report(db: Session, execution: models.CalcExecution, creator_name: str) -> models.GeneratedReport:
+    version = _report_version(db, execution.id)
+    report = models.GeneratedReport(
+        report_no=None,
+        execution_id=execution.id,
+        status="DRAFT",
+        version=version,
+        file_path=_build_report_file_path(execution, version),
+        watermark=f"草稿 / {creator_name}",
+    )
+    db.add(report)
+    return report
 
 
 def _get_current_approval_step(db: Session, approval_id: int) -> models.ApprovalStep | None:
@@ -1524,16 +1603,7 @@ def create_report(
     execution = db.get(models.CalcExecution, execution_id)
     if execution is None:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "执行记录不存在"})
-    version = _report_version(db, execution.id)
-    report = models.GeneratedReport(
-        report_no=None,
-        execution_id=execution.id,
-        status="DRAFT",
-        version=version,
-        file_path=_build_report_file_path(execution, version),
-        watermark=f"草稿 / {current_user['name']}",
-    )
-    db.add(report)
+    report = _create_draft_report(db, execution, str(current_user.get("name") or "系统"))
     db.commit()
     db.refresh(report)
     return _report_payload(report)
