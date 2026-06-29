@@ -14,6 +14,7 @@ class ProjectCreate(BaseModel):
     code: str
     name: str
     owner_user_id: int
+    department: str | None = None
     status: str = "DRAFT"
     description: str | None = None
 
@@ -24,6 +25,7 @@ class ProjectManagementCreate(BaseModel):
     created_at: str | None = None
     enterprise: str
     technical_terms: str | None = None
+    department: str | None = None
 
 
 class ProjectManagementBatchCreate(BaseModel):

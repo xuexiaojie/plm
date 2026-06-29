@@ -131,6 +131,32 @@ ROLE_NAMES = {
     "readonly": "只读用户",
 }
 
+BUSINESS_DEPARTMENTS = {"工业炉", "炼铁", "炼钢", "轧钢", "热力", "炉窑设计"}
+MANAGEMENT_DEPARTMENTS = {"总部", "总工办", "质量管理部", "科技管理部", "技术研究院", "技术中心", "项目管理", "工艺审核", "结构审核"}
+SYSTEM_DEPARTMENTS = {"平台管理"}
+DEPARTMENT_ALIASES = {"炉窑设计": "工业炉"}
+
+DEPARTMENT_MODULES = {
+    "工业炉": ["flow-analysis-query", "engineering-analysis", "ai-query-view", "artifact-entry-view", "artifact-query-view", "calc-item-management", "approval"],
+    "炉窑设计": ["flow-analysis-query", "engineering-analysis", "ai-query-view", "artifact-entry-view", "artifact-query-view", "calc-item-management", "approval"],
+    "炼铁": ["flow-analysis-query", "engineering-analysis", "ai-query-view", "artifact-query-view"],
+    "炼钢": ["flow-analysis-query", "engineering-analysis", "ai-query-view", "artifact-query-view"],
+    "轧钢": ["flow-analysis-query", "engineering-analysis", "ai-query-view", "artifact-query-view"],
+    "热力": ["flow-analysis-query", "engineering-analysis", "ai-query-view", "artifact-query-view"],
+}
+
+ALL_MENU_MODULES = [
+    "project-management",
+    "artifact-entry-view",
+    "artifact-query-view",
+    "calc-item-management",
+    "approval",
+    "digital-twin",
+    "flow-analysis-query",
+    "engineering-analysis",
+    "permission-view",
+]
+
 USER_CATALOG = [
     {"id": 1, "name": "赵总", "role": "admin", "title": "系统管理员", "department": "平台管理"},
     {"id": 2, "name": "呼启同", "role": "admin", "title": "系统管理员", "department": "平台管理"},
@@ -149,8 +175,13 @@ USER_CATALOG = [
     {"id": 17, "name": "杨三堂", "role": "admin", "title": "系统管理员", "department": "平台管理"},
     {"id": 18, "name": "曹开明", "role": "admin", "title": "系统管理员", "department": "平台管理"},
     {"id": 19, "name": "王志斌", "role": "admin", "title": "系统管理员", "department": "平台管理"},
+    {"id": 81, "name": "工业炉业务员", "role": "engineer", "title": "业务工程师", "department": "工业炉"},
+    {"id": 85, "name": "吴启明", "role": "engineer", "title": "业务工程师", "department": "工业炉"},
     {"id": 11, "name": "张工", "role": "engineer", "title": "工艺工程师", "department": "炉窑设计"},
     {"id": 12, "name": "李工", "role": "engineer", "title": "设备工程师", "department": "炉窑设计"},
+    {"id": 82, "name": "炼钢业务员", "role": "engineer", "title": "业务工程师", "department": "炼钢"},
+    {"id": 83, "name": "总部管理", "role": "readonly", "title": "总部管理人员", "department": "总部"},
+    {"id": 84, "name": "科技管理", "role": "readonly", "title": "职能管理人员", "department": "科技管理部"},
     {"id": 21, "name": "王工", "role": "reviewer", "title": "专业校核", "department": "工艺审核"},
     {"id": 22, "name": "周工", "role": "reviewer", "title": "专业校核", "department": "结构审核"},
     {"id": 31, "name": "陈总工", "role": "chief_reviewer", "title": "总审", "department": "技术中心"},
@@ -160,7 +191,9 @@ USER_CATALOG = [
     {"id": 71, "name": "访客", "role": "readonly", "title": "只读用户", "department": "访客"},
 ]
 USER_BY_ID = {user["id"]: user for user in USER_CATALOG}
-ROLE_USER_IDS = {user["role"]: user["id"] for user in USER_CATALOG}
+ROLE_USER_IDS = {}
+for user in USER_CATALOG:
+    ROLE_USER_IDS.setdefault(user["role"], user["id"])
 APPROVAL_FLOW_USER_IDS = [21, 31]
 
 
@@ -225,6 +258,66 @@ def get_current_user(
 
 def get_current_user_id(current_user: dict = Depends(get_current_user)) -> int:
     return int(current_user["id"])
+
+
+def department_access_scope(user: dict) -> dict:
+    department = str(user.get("department") or "")
+    access_department = DEPARTMENT_ALIASES.get(department, department)
+    role = str(user.get("role") or "")
+    if role == "admin" or department in SYSTEM_DEPARTMENTS:
+        level = "system"
+        allowed_departments = sorted(BUSINESS_DEPARTMENTS | MANAGEMENT_DEPARTMENTS | SYSTEM_DEPARTMENTS | {department, access_department})
+        visible_modules = ALL_MENU_MODULES
+    elif department in MANAGEMENT_DEPARTMENTS:
+        level = "management"
+        allowed_departments = sorted(BUSINESS_DEPARTMENTS | {department, access_department})
+        visible_modules = ALL_MENU_MODULES
+    else:
+        level = "department"
+        allowed_departments = sorted({department, access_department})
+        visible_modules = ["project-management", *DEPARTMENT_MODULES.get(access_department, DEPARTMENT_MODULES["工业炉"])]
+    return {
+        "level": level,
+        "department": department,
+        "access_department": access_department,
+        "allowed_departments": allowed_departments,
+        "visible_modules": visible_modules,
+        "physical_storage_root": f"uploaded_artifacts/{department}",
+    }
+
+
+def _can_access_project(project: models.Project | None, current_user: dict) -> bool:
+    if project is None or project.deleted_at is not None:
+        return False
+    scope = department_access_scope(current_user)
+    return scope["level"] in {"system", "management"} or project.department in scope["allowed_departments"]
+
+
+def require_project_access(db: Session, project_id: int, current_user: dict) -> models.Project:
+    project = db.get(models.Project, project_id)
+    if not _can_access_project(project, current_user):
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "项目不存在或无权访问"})
+    return project
+
+
+def visible_project_query(db: Session, current_user: dict):
+    query = db.query(models.Project).filter(models.Project.deleted_at.is_(None))
+    scope = department_access_scope(current_user)
+    if scope["level"] not in {"system", "management"}:
+        query = query.filter(models.Project.department.in_(scope["allowed_departments"]))
+    return query
+
+
+def _project_payload(project: models.Project) -> dict:
+    return {"id": project.id, "code": project.code, "name": project.name, "department": project.department, "status": project.status}
+
+
+def _department_from_payload(payload_department: str | None, current_user: dict) -> str:
+    scope = department_access_scope(current_user)
+    requested = (payload_department or "工业炉").strip()
+    if scope["level"] == "department" and requested not in scope["allowed_departments"]:
+        raise HTTPException(status_code=403, detail={"code": "PERMISSION_DENIED", "message": "普通业务部门只能创建本部门项目"})
+    return requested
 
 
 def _permission_snapshot() -> dict:
@@ -371,8 +464,14 @@ def _safe_upload_filename(filename: str) -> str:
     return safe or "unnamed"
 
 
-def _save_uploaded_file(project_id: int, artifact_id: int, filename: str, content: bytes) -> Path:
-    directory = UPLOAD_DIR / str(project_id) / str(artifact_id)
+def _project_storage_dir(db: Session, project_id: int) -> Path:
+    project = db.get(models.Project, project_id)
+    department = _safe_upload_filename(project.department if project else "unknown")
+    return UPLOAD_DIR / department / str(project_id)
+
+
+def _save_uploaded_file(db: Session, project_id: int, artifact_id: int, filename: str, content: bytes) -> Path:
+    directory = _project_storage_dir(db, project_id) / str(artifact_id)
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / _safe_upload_filename(filename)
     path.write_bytes(content)
@@ -461,7 +560,11 @@ def _soft_delete_matching_uploads(db: Session, project_id: int, artifact_id: int
     return deleted
 
 
-def _find_stored_upload(project_id: int, artifact_id: int, filename: str) -> Path | None:
+def _find_stored_upload(project_id: int, artifact_id: int, filename: str, db: Session | None = None) -> Path | None:
+    if db is not None:
+        path = _project_storage_dir(db, project_id) / str(artifact_id) / _safe_upload_filename(filename)
+        if path.exists():
+            return path
     path = UPLOAD_DIR / str(project_id) / str(artifact_id) / _safe_upload_filename(filename)
     if path.exists():
         return path
@@ -479,7 +582,7 @@ def _reparse_stored_artifacts(db: Session) -> dict:
         if not filename:
             skipped.append({"id": artifact.id, "title": artifact.title, "reason": "未找到已上传文件名"})
             continue
-        path = _find_stored_upload(artifact.project_id, artifact.id, filename)
+        path = _find_stored_upload(artifact.project_id, artifact.id, filename, db)
         if path is None:
             missing_files.append({"id": artifact.id, "title": artifact.title, "filename": filename})
             continue
@@ -499,11 +602,11 @@ def _artifact_response(artifact: models.ProjectArtifact) -> dict:
     return {"id": artifact.id, "artifact_type": artifact.artifact_type, "type_name": ARTIFACT_TYPES[artifact.artifact_type], "title": artifact.title}
 
 
-def _artifact_file_payload(artifact: models.ProjectArtifact) -> dict:
+def _artifact_file_payload(artifact: models.ProjectArtifact, db: Session | None = None) -> dict:
     filename = _extract_uploaded_filename(artifact.content)
     if not filename:
         return {"file_name": None, "file_content_type": None, "has_file": False, "view_url": None}
-    path = _find_stored_upload(artifact.project_id, artifact.id, filename)
+    path = _find_stored_upload(artifact.project_id, artifact.id, filename, db)
     content_type = _extract_uploaded_content_type(artifact.content, filename)
     return {
         "file_name": filename,
@@ -513,7 +616,7 @@ def _artifact_file_payload(artifact: models.ProjectArtifact) -> dict:
     }
 
 
-def _artifact_list_payload(artifact: models.ProjectArtifact) -> dict:
+def _artifact_list_payload(artifact: models.ProjectArtifact, db: Session | None = None) -> dict:
     return {
         "id": artifact.id,
         "project_item_id": artifact.project_item_id,
@@ -523,7 +626,7 @@ def _artifact_list_payload(artifact: models.ProjectArtifact) -> dict:
         "source_code": artifact.source_code,
         "content_preview": _content_preview(artifact.content),
         "content_length": len(artifact.content),
-        **_artifact_file_payload(artifact),
+        **_artifact_file_payload(artifact, db),
     }
 
 
@@ -734,9 +837,9 @@ def seed(db: Session = Depends(get_db)) -> dict[str, str]:
 
 
 @app.get("/api/projects")
-def list_projects(db: Session = Depends(get_db)) -> list[dict]:
-    projects = db.query(models.Project).filter(models.Project.deleted_at.is_(None)).all()
-    return [{"id": p.id, "code": p.code, "name": p.name, "status": p.status} for p in projects]
+def list_projects(db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)) -> list[dict]:
+    projects = visible_project_query(db, current_user).all()
+    return [_project_payload(project) for project in projects]
 
 
 @app.get("/api/project-management/options")
@@ -798,6 +901,7 @@ def list_users(role: str = Depends(permission_dependency("read"))) -> list[dict]
             **user,
             "role_name": ROLE_NAMES.get(user["role"], user["role"]),
             "permissions": sorted(ROLE_PERMISSIONS.get(user["role"], set())),
+            "access_scope": department_access_scope(user),
         }
         for user in USER_CATALOG
     ]
@@ -809,6 +913,7 @@ def get_current_user_profile(current_user: dict = Depends(get_current_user)) -> 
         **current_user,
         "role_name": ROLE_NAMES.get(current_user["role"], current_user["role"]),
         "permissions": sorted(ROLE_PERMISSIONS.get(current_user["role"], set())),
+        "access_scope": department_access_scope(current_user),
     }
 
 
@@ -827,15 +932,17 @@ def update_role_permissions(role_code: str, payload: PermissionAssignment, role:
 
 
 @app.post("/api/projects")
-def create_project(payload: ProjectCreate, db: Session = Depends(get_db)) -> dict:
+def create_project(payload: ProjectCreate, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)) -> dict:
     existing = db.query(models.Project).filter_by(code=payload.code).one_or_none()
     if existing:
         raise HTTPException(status_code=409, detail={"code": "STATE_INVALID", "message": "项目编码已存在"})
-    project = models.Project(**payload.model_dump())
+    data = payload.model_dump()
+    data["department"] = _department_from_payload(data.get("department"), current_user)
+    project = models.Project(**data)
     db.add(project)
     db.commit()
     db.refresh(project)
-    return {"id": project.id, "code": project.code, "name": project.name}
+    return _project_payload(project)
 
 
 def _project_description(project_manager: str, enterprise: str, technical_terms: str | None, created_at: str | None = None) -> str:
@@ -855,6 +962,7 @@ def _project_management_row(project: models.Project) -> dict:
     return {
         "id": project.id,
         "project_name": project.name,
+        "department": project.department,
         "project_manager": details.get("project_manager", ""),
         "created_at": details.get("created_at_input") or project.created_at.isoformat(),
         "enterprise": details.get("enterprise", ""),
@@ -879,17 +987,18 @@ def _soft_delete_project(db: Session, project: models.Project) -> None:
 
 
 @app.get("/api/project-management/projects")
-def list_project_management_projects(db: Session = Depends(get_db)) -> list[dict]:
-    projects = db.query(models.Project).filter(models.Project.deleted_at.is_(None)).order_by(models.Project.id.desc()).all()
+def list_project_management_projects(db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)) -> list[dict]:
+    projects = visible_project_query(db, current_user).order_by(models.Project.id.desc()).all()
     return [_project_management_row(project) for project in projects]
 
 
 @app.post("/api/project-management/projects")
-def create_project_management_project(payload: ProjectManagementCreate, db: Session = Depends(get_db)) -> dict:
+def create_project_management_project(payload: ProjectManagementCreate, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)) -> dict:
     project = models.Project(
         code=f"PRJ-MGMT-{utc_now().strftime('%Y%m%d%H%M%S%f')}-{uuid4().hex[:6]}",
         name=payload.project_name,
-        owner_user_id=2,
+        owner_user_id=int(current_user["id"]),
+        department=_department_from_payload(payload.department, current_user),
         status="ACTIVE",
         description=_project_description(payload.project_manager, payload.enterprise, payload.technical_terms, payload.created_at),
     )
@@ -900,10 +1009,8 @@ def create_project_management_project(payload: ProjectManagementCreate, db: Sess
 
 
 @app.put("/api/project-management/projects/{project_id}")
-def update_project_management_project(project_id: int, payload: ProjectManagementCreate, db: Session = Depends(get_db)) -> dict:
-    project = db.get(models.Project, project_id)
-    if project is None or project.deleted_at is not None:
-        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "项目不存在"})
+def update_project_management_project(project_id: int, payload: ProjectManagementCreate, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)) -> dict:
+    project = require_project_access(db, project_id, current_user)
     project.name = payload.project_name
     project.description = _project_description(payload.project_manager, payload.enterprise, payload.technical_terms, payload.created_at)
     db.commit()
@@ -912,17 +1019,15 @@ def update_project_management_project(project_id: int, payload: ProjectManagemen
 
 
 @app.delete("/api/project-management/projects/{project_id}")
-def delete_project_management_project(project_id: int, db: Session = Depends(get_db)) -> dict:
-    project = db.get(models.Project, project_id)
-    if project is None or project.deleted_at is not None:
-        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "项目不存在"})
+def delete_project_management_project(project_id: int, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)) -> dict:
+    project = require_project_access(db, project_id, current_user)
     _soft_delete_project(db, project)
     db.commit()
     return {"id": project_id, "status": "DELETED"}
 
 
 @app.post("/api/project-management/projects/batch")
-def create_project_management_projects_batch(payload: ProjectManagementBatchCreate, db: Session = Depends(get_db)) -> dict:
+def create_project_management_projects_batch(payload: ProjectManagementBatchCreate, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)) -> dict:
     if not payload.items:
         raise HTTPException(status_code=400, detail={"code": "PARAM_INVALID", "message": "批量项目不能为空"})
     projects = []
@@ -930,7 +1035,8 @@ def create_project_management_projects_batch(payload: ProjectManagementBatchCrea
         project = models.Project(
             code=f"PRJ-MGMT-{utc_now().strftime('%Y%m%d%H%M%S%f')}-{uuid4().hex[:6]}",
             name=item.project_name,
-            owner_user_id=2,
+            owner_user_id=int(current_user["id"]),
+            department=_department_from_payload(item.department, current_user),
             status="ACTIVE",
             description=_project_description(item.project_manager, item.enterprise, item.technical_terms, item.created_at),
         )
@@ -943,10 +1049,8 @@ def create_project_management_projects_batch(payload: ProjectManagementBatchCrea
 
 
 @app.post("/api/projects/{project_id}/items")
-def create_item(project_id: int, payload: ProjectItemCreate, db: Session = Depends(get_db)) -> dict:
-    project = db.get(models.Project, project_id)
-    if project is None:
-        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "项目不存在"})
+def create_item(project_id: int, payload: ProjectItemCreate, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)) -> dict:
+    require_project_access(db, project_id, current_user)
     item = models.ProjectItem(project_id=project_id, **payload.model_dump())
     db.add(item)
     db.commit()
@@ -955,14 +1059,16 @@ def create_item(project_id: int, payload: ProjectItemCreate, db: Session = Depen
 
 
 @app.get("/api/projects/{project_id}/items")
-def list_items(project_id: int, db: Session = Depends(get_db)) -> list[dict]:
+def list_items(project_id: int, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)) -> list[dict]:
+    require_project_access(db, project_id, current_user)
     items = db.query(models.ProjectItem).filter_by(project_id=project_id).filter(models.ProjectItem.deleted_at.is_(None)).all()
     return [{"id": i.id, "code": i.code, "name": i.name, "furnace_type": i.furnace_type} for i in items]
 
 
 @app.get("/api/calc-items")
-def list_calc_items(db: Session = Depends(get_db)) -> list[dict]:
-    items = db.query(models.ProjectItem).filter(models.ProjectItem.deleted_at.is_(None)).order_by(models.ProjectItem.id.desc()).all()
+def list_calc_items(db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)) -> list[dict]:
+    visible_project_ids = [project.id for project in visible_project_query(db, current_user).all()]
+    items = db.query(models.ProjectItem).filter(models.ProjectItem.deleted_at.is_(None), models.ProjectItem.project_id.in_(visible_project_ids)).order_by(models.ProjectItem.id.desc()).all()
     return [
         {
             "id": item.id,
@@ -1000,11 +1106,11 @@ def create_artifact(
     payload: ArtifactCreate,
     db: Session = Depends(get_db),
     role: str = Depends(permission_dependency("artifact:manage")),
+    current_user: dict = Depends(get_current_user),
 ) -> dict:
     if payload.artifact_type not in ARTIFACT_TYPES:
         raise HTTPException(status_code=400, detail={"code": "PARAM_INVALID", "message": "资料类型不支持"})
-    if db.get(models.Project, project_id) is None:
-        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "项目不存在"})
+    require_project_access(db, project_id, current_user)
     validate_project_item(db, project_id, payload.project_item_id)
     artifact = models.ProjectArtifact(project_id=project_id, **payload.model_dump())
     db.add(artifact)
@@ -1026,11 +1132,11 @@ async def upload_artifact(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     role: str = Depends(permission_dependency("artifact:manage")),
+    current_user: dict = Depends(get_current_user),
 ) -> dict:
     if artifact_type not in ARTIFACT_TYPES:
         raise HTTPException(status_code=400, detail={"code": "PARAM_INVALID", "message": "资料类型不支持"})
-    if db.get(models.Project, project_id) is None:
-        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "项目不存在"})
+    require_project_access(db, project_id, current_user)
     validate_project_item(db, project_id, project_item_id)
     raw = await file.read()
     status, text = _decode_uploaded_text(file.filename or title, file.content_type, raw)
@@ -1052,7 +1158,7 @@ async def upload_artifact(
     )
     db.add(artifact)
     db.flush()
-    _save_uploaded_file(project_id, artifact.id, file.filename or title, raw)
+    _save_uploaded_file(db, project_id, artifact.id, file.filename or title, raw)
     replaced_count = _soft_delete_matching_uploads(db, project_id, artifact.id, file.filename or title)
     _clear_artifact_chunks(db, artifact_id=artifact.id)
     db.commit()
@@ -1074,9 +1180,9 @@ def create_artifacts_batch(
     payload: ArtifactBatchCreate,
     db: Session = Depends(get_db),
     role: str = Depends(permission_dependency("artifact:manage")),
+    current_user: dict = Depends(get_current_user),
 ) -> dict:
-    if db.get(models.Project, project_id) is None:
-        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "项目不存在"})
+    require_project_access(db, project_id, current_user)
     if not payload.items:
         raise HTTPException(status_code=400, detail={"code": "PARAM_INVALID", "message": "批量资料不能为空"})
     artifacts = []
@@ -1102,19 +1208,20 @@ def create_artifacts_batch(
 
 
 @app.get("/api/projects/{project_id}/artifacts")
-def list_artifacts(project_id: int, project_item_id: int | None = None, db: Session = Depends(get_db)) -> list[dict]:
+def list_artifacts(project_id: int, project_item_id: int | None = None, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)) -> list[dict]:
+    require_project_access(db, project_id, current_user)
     query = db.query(models.ProjectArtifact).filter_by(project_id=project_id, status="ACTIVE")
     if project_item_id is not None:
         query = query.filter_by(project_item_id=project_item_id)
     artifacts = query.order_by(models.ProjectArtifact.id.desc()).all()
-    return [_artifact_list_payload(artifact) for artifact in artifacts]
+    return [_artifact_list_payload(artifact, db) for artifact in artifacts]
 
 
 @app.get("/api/artifacts/query")
-def query_artifacts(db: Session = Depends(get_db)) -> list[dict]:
-    projects = {project.id: project for project in db.query(models.Project).all()}
+def query_artifacts(db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)) -> list[dict]:
+    projects = {project.id: project for project in visible_project_query(db, current_user).all()}
     managed_map = {project.name: _project_management_row(project) for project in projects.values()}
-    artifacts = db.query(models.ProjectArtifact).filter_by(status="ACTIVE").order_by(models.ProjectArtifact.project_id, models.ProjectArtifact.id.desc()).all()
+    artifacts = db.query(models.ProjectArtifact).filter(models.ProjectArtifact.status == "ACTIVE", models.ProjectArtifact.project_id.in_(list(projects.keys()))).order_by(models.ProjectArtifact.project_id, models.ProjectArtifact.id.desc()).all()
     return [
         {
             "project_id": artifact.project_id,
@@ -1122,7 +1229,7 @@ def query_artifacts(db: Session = Depends(get_db)) -> list[dict]:
             "project_code": projects.get(artifact.project_id).code if projects.get(artifact.project_id) else "",
             "project_manager": managed_map.get(projects.get(artifact.project_id).name, {}).get("project_manager", "未填") if projects.get(artifact.project_id) else "未填",
             "project_intro": managed_map.get(projects.get(artifact.project_id).name, {}).get("technical_terms") if projects.get(artifact.project_id) and managed_map.get(projects.get(artifact.project_id).name, {}).get("technical_terms") else (projects.get(artifact.project_id).description if projects.get(artifact.project_id) else ""),
-            **_artifact_list_payload(artifact),
+            **_artifact_list_payload(artifact, db),
         }
         for artifact in artifacts
     ]
@@ -1133,14 +1240,16 @@ def get_artifact_file(
     artifact_id: int,
     db: Session = Depends(get_db),
     role: str = Depends(permission_dependency("read")),
+    current_user: dict = Depends(get_current_user),
 ):
     artifact = db.get(models.ProjectArtifact, artifact_id)
     if artifact is None or artifact.status != "ACTIVE":
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "资料不存在"})
+    require_project_access(db, artifact.project_id, current_user)
     filename = _extract_uploaded_filename(artifact.content)
     if not filename:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "资料未关联原始附件"})
-    path = _find_stored_upload(artifact.project_id, artifact.id, filename)
+    path = _find_stored_upload(artifact.project_id, artifact.id, filename, db)
     if path is None:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "原始附件不存在"})
     content_type = _extract_uploaded_content_type(artifact.content, filename)
@@ -1213,6 +1322,7 @@ def execute_node(
     template = db.get(models.CalcStepTemplate, node.template_id)
     if item is None or template is None:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "名目或模板不存在"})
+    require_project_access(db, item.project_id, current_user)
 
     execution_no = f"EXEC-{utc_now().strftime('%Y%m%d%H%M%S%f')}-{node_id}-{uuid4().hex[:8]}"
     started = utc_now()
@@ -1253,10 +1363,11 @@ def execute_node(
 
 
 @app.get("/api/executions/{execution_id}")
-def get_execution(execution_id: int, db: Session = Depends(get_db)) -> dict:
+def get_execution(execution_id: int, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)) -> dict:
     execution = db.get(models.CalcExecution, execution_id)
     if execution is None:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "执行记录不存在"})
+    require_project_access(db, execution.project_id, current_user)
     result = execution.result
     return {
         "id": execution.id,
@@ -1268,12 +1379,13 @@ def get_execution(execution_id: int, db: Session = Depends(get_db)) -> dict:
 
 
 @app.get("/api/executions")
-def list_executions(limit: int = 20, offset: int = 0, db: Session = Depends(get_db)) -> list[dict]:
+def list_executions(limit: int = 20, offset: int = 0, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)) -> list[dict]:
     safe_limit = max(1, min(limit, 100))
     safe_offset = max(offset, 0)
     executions = (
         db.query(models.CalcExecution)
         .options(joinedload(models.CalcExecution.result))
+        .filter(models.CalcExecution.project_id.in_([project.id for project in visible_project_query(db, current_user).all()]))
         .order_by(models.CalcExecution.id.desc())
         .offset(safe_offset)
         .limit(safe_limit)
@@ -1404,6 +1516,7 @@ def submit_approval(
     execution = db.get(models.CalcExecution, execution_id)
     if execution is None:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "执行记录不存在"})
+    require_project_access(db, execution.project_id, current_user)
     latest_approval = (
         db.query(models.ApprovalRequest)
         .filter(models.ApprovalRequest.execution_id == execution_id)
@@ -1494,7 +1607,12 @@ def list_approvals(
     query = db.query(models.ApprovalRequest).order_by(models.ApprovalRequest.id.desc())
     if status:
         query = query.filter_by(status=status)
-    rows = query.all()
+    visible_project_ids = {project.id for project in visible_project_query(db, current_user).all()}
+    rows = []
+    for row in query.all():
+        execution = db.get(models.CalcExecution, row.execution_id)
+        if execution and execution.project_id in visible_project_ids:
+            rows.append(row)
     if mine_only:
         user_id = int(current_user["id"])
         rows = [row for row in rows if row.current_approver_id == user_id or row.submitted_by == user_id]
@@ -1502,10 +1620,14 @@ def list_approvals(
 
 
 @app.get("/api/approvals/{approval_id}")
-def get_approval(approval_id: int, db: Session = Depends(get_db), role: str = Depends(permission_dependency("read"))) -> dict:
+def get_approval(approval_id: int, db: Session = Depends(get_db), role: str = Depends(permission_dependency("read")), current_user: dict = Depends(get_current_user)) -> dict:
     approval = db.get(models.ApprovalRequest, approval_id)
     if approval is None:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "审批申请不存在"})
+    execution = db.get(models.CalcExecution, approval.execution_id)
+    if execution is None:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "执行记录不存在"})
+    require_project_access(db, execution.project_id, current_user)
     return _approval_payload(db, approval)
 
 
@@ -1520,6 +1642,9 @@ def approve_request(
     approval = db.get(models.ApprovalRequest, approval_id)
     if approval is None:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "审批申请不存在"})
+    execution = db.get(models.CalcExecution, approval.execution_id)
+    if execution is not None:
+        require_project_access(db, execution.project_id, current_user)
     if approval.status != "IN_REVIEW":
         raise HTTPException(status_code=409, detail={"code": "STATE_INVALID", "message": "当前状态不可审批通过"})
     current_step = _get_current_approval_step(db, approval.id)
@@ -1566,6 +1691,9 @@ def return_request(
     approval = db.get(models.ApprovalRequest, approval_id)
     if approval is None:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "审批申请不存在"})
+    execution = db.get(models.CalcExecution, approval.execution_id)
+    if execution is not None:
+        require_project_access(db, execution.project_id, current_user)
     if approval.status != "IN_REVIEW":
         raise HTTPException(status_code=409, detail={"code": "STATE_INVALID", "message": "当前状态不可退回"})
     current_step = _get_current_approval_step(db, approval.id)
@@ -1603,6 +1731,7 @@ def create_report(
     execution = db.get(models.CalcExecution, execution_id)
     if execution is None:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "执行记录不存在"})
+    require_project_access(db, execution.project_id, current_user)
     report = _create_draft_report(db, execution, str(current_user.get("name") or "系统"))
     db.commit()
     db.refresh(report)
@@ -1614,11 +1743,18 @@ def list_reports(
     execution_id: int | None = None,
     db: Session = Depends(get_db),
     role: str = Depends(permission_dependency("read")),
+    current_user: dict = Depends(get_current_user),
 ) -> list[dict]:
     query = db.query(models.GeneratedReport).order_by(models.GeneratedReport.id.desc())
     if execution_id is not None:
         query = query.filter_by(execution_id=execution_id)
-    return [_report_payload(report) for report in query.all()]
+    visible_project_ids = {project.id for project in visible_project_query(db, current_user).all()}
+    reports = []
+    for report in query.all():
+        execution = db.get(models.CalcExecution, report.execution_id)
+        if execution and execution.project_id in visible_project_ids:
+            reports.append(report)
+    return [_report_payload(report) for report in reports]
 
 
 @app.post("/api/reports/{report_id}/publish")
@@ -1631,6 +1767,9 @@ def publish_report(
     report = db.get(models.GeneratedReport, report_id)
     if report is None:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "报告不存在"})
+    execution = db.get(models.CalcExecution, report.execution_id)
+    if execution is not None:
+        require_project_access(db, execution.project_id, current_user)
     if report.status != "DRAFT":
         raise HTTPException(status_code=409, detail={"code": "STATE_INVALID", "message": "当前报告状态不可发布"})
     approved = (
@@ -1650,10 +1789,13 @@ def publish_report(
 
 
 @app.get("/api/reports/{report_id}")
-def get_report(report_id: int, db: Session = Depends(get_db)) -> dict:
+def get_report(report_id: int, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)) -> dict:
     report = db.get(models.GeneratedReport, report_id)
     if report is None:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "报告不存在"})
+    execution = db.get(models.CalcExecution, report.execution_id)
+    if execution is not None:
+        require_project_access(db, execution.project_id, current_user)
     return _report_payload(report)
 
 
@@ -1662,11 +1804,14 @@ def download_report(
     report_id: int,
     db: Session = Depends(get_db),
     role: str = Depends(permission_dependency("report:download")),
+    current_user: dict = Depends(get_current_user),
 ) -> str:
     report = db.get(models.GeneratedReport, report_id)
     if report is None:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "报告不存在"})
     execution = db.get(models.CalcExecution, report.execution_id)
+    if execution is not None:
+        require_project_access(db, execution.project_id, current_user)
     result = db.query(models.CalcResult).filter_by(execution_id=report.execution_id).one_or_none()
     approval = (
         db.query(models.ApprovalRequest)
@@ -1733,9 +1878,9 @@ async def create_ai_analysis(
     payload: AiAnalysisRequest,
     db: Session = Depends(get_db),
     role: str = Depends(permission_dependency("ai:analyze")),
+    current_user: dict = Depends(get_current_user),
 ) -> dict:
-    if db.get(models.Project, project_id) is None:
-        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "项目不存在"})
+    require_project_access(db, project_id, current_user)
     validate_project_item(db, project_id, payload.project_item_id)
     executions = []
     for execution_id in payload.execution_ids:
@@ -1810,7 +1955,8 @@ async def create_ai_analysis(
 
 
 @app.get("/api/projects/{project_id}/ai-analyses")
-def list_ai_analyses(project_id: int, db: Session = Depends(get_db)) -> list[dict]:
+def list_ai_analyses(project_id: int, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)) -> list[dict]:
+    require_project_access(db, project_id, current_user)
     analyses = db.query(models.AiAnalysis).filter_by(project_id=project_id).order_by(models.AiAnalysis.id.desc()).all()
     return [
         {

@@ -25,6 +25,7 @@ class Project(Base, TimestampMixin):
     code: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     owner_user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    department: Mapped[str] = mapped_column(String(64), default="工业炉", nullable=False, index=True)
     status: Mapped[str] = mapped_column(String(32), default="DRAFT", nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
 

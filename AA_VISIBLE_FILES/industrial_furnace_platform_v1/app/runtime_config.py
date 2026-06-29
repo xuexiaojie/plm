@@ -73,6 +73,8 @@ def _load_tencent_secret_csv(path: Path) -> None:
 
 
 def load_runtime_ai_env() -> None:
+    if os.getenv("SKIP_RUNTIME_AI_ENV_LOAD") == "1":
+        return
     for path in (PROJECT_ROOT / ".env", PROJECT_ROOT / ".env.local"):
         _load_dotenv_file(path)
     for path in _candidate_tencent_secret_csv_paths():

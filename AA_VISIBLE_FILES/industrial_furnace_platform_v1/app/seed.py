@@ -34,6 +34,7 @@ def _upsert_project(db: Session) -> models.Project:
             code="PRJ-2026-001",
             name="1780 热轧产线工业炉样例项目",
             owner_user_id=2,
+            department="工业炉",
             status="ACTIVE",
         )
         db.add(project)

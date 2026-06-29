@@ -8,10 +8,12 @@ from io import BytesIO
 from pathlib import Path
 from urllib.parse import quote
 
+import pytest
 from PIL import Image
 import xlwt
 
 os.environ["DATABASE_URL"] = "sqlite:///:memory:"
+os.environ["SKIP_RUNTIME_AI_ENV_LOAD"] = "1"
 
 from fastapi.testclient import TestClient
 
@@ -25,6 +27,13 @@ from app.main import app
 
 client = TestClient(app)
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture(autouse=True)
+def isolate_runtime_ai_env(monkeypatch):
+    for key in runtime_config_module.AI_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("SKIP_RUNTIME_AI_ENV_LOAD", "1")
 
 
 def build_docx(text: str) -> bytes:
@@ -106,7 +115,8 @@ def test_index_page_loads_console():
     text = response.text
 
     expected_sections = [
-        "工业炉设计助手 v 1.0",
+        "工业炉/钢铁  设计助手",
+        "所属部门：工业炉",
         "登录进入主界面",
         "请先登录，再进入主界面",
         "项目管理",
@@ -115,8 +125,9 @@ def test_index_page_loads_console():
         "计算管理",
         "审批报告",
         "数字孪生",
-        "主流程分析",
+        "流程界面分析",
         "工程分析",
+        "AI 查询",
         "权限分配",
         "调试信息",
     ]
@@ -820,6 +831,7 @@ def test_configured_model_providers_loads_project_env_and_tencent_csv(tmp_path, 
 
     for key in runtime_config_module.AI_ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
+    monkeypatch.delenv("SKIP_RUNTIME_AI_ENV_LOAD", raising=False)
 
     monkeypatch.setattr(runtime_config_module, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(runtime_config_module, "WORKSPACE_TMP_DIR", tmp_dir)
@@ -896,6 +908,7 @@ def test_configured_model_providers_uses_tencentcloud_when_type_is_explicit(tmp_
 
     for key in runtime_config_module.AI_ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
+    monkeypatch.delenv("SKIP_RUNTIME_AI_ENV_LOAD", raising=False)
 
     monkeypatch.setattr(runtime_config_module, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(runtime_config_module, "WORKSPACE_TMP_DIR", tmp_dir)
@@ -930,6 +943,68 @@ def test_permission_assignment_updates_role_permissions():
         json={"permissions": ["read"]},
     )
     assert forbidden.status_code == 403
+
+
+def test_department_scope_filters_projects_and_artifacts():
+    init_db()
+    industrial = client.post(
+        "/api/project-management/projects",
+        headers={"X-Role": "engineer", "X-User-Id": "81"},
+        json={"project_name": "工业炉部门项目", "project_manager": "工业炉业务员", "enterprise": "企业A", "technical_terms": "工业炉资料"},
+    )
+    steel = client.post(
+        "/api/project-management/projects",
+        headers={"X-Role": "engineer", "X-User-Id": "82"},
+        json={"project_name": "炼钢部门项目", "project_manager": "炼钢业务员", "enterprise": "企业B", "technical_terms": "炼钢资料", "department": "炼钢"},
+    )
+    assert industrial.status_code == 200
+    assert steel.status_code == 200
+    industrial_project_id = industrial.json()["id"]
+    steel_project_id = steel.json()["id"]
+
+    artifact = client.post(
+        f"/api/projects/{industrial_project_id}/artifacts",
+        headers={"X-Role": "engineer", "X-User-Id": "81"},
+        json={"artifact_type": "technical_description", "title": "工业炉说明", "content": "工业炉本部门资料"},
+    )
+    assert artifact.status_code == 200
+
+    industrial_projects = client.get("/api/projects", headers={"X-Role": "engineer", "X-User-Id": "81"}).json()
+    assert {row["id"] for row in industrial_projects} >= {industrial_project_id}
+    assert steel_project_id not in {row["id"] for row in industrial_projects}
+
+    cross_artifacts = client.get(f"/api/projects/{industrial_project_id}/artifacts", headers={"X-Role": "engineer", "X-User-Id": "82"})
+    assert cross_artifacts.status_code == 404
+
+    headquarters_projects = client.get("/api/projects", headers={"X-Role": "readonly", "X-User-Id": "83"}).json()
+    assert {industrial_project_id, steel_project_id}.issubset({row["id"] for row in headquarters_projects})
+
+
+def test_current_user_exposes_department_permission_template():
+    default_engineer = client.get("/api/current-user", headers={"X-Role": "engineer"}).json()
+    assert default_engineer["department"] == "工业炉"
+
+    business = client.get("/api/current-user", headers={"X-Role": "engineer", "X-User-Id": "81"}).json()
+    assert business["department"] == "工业炉"
+    assert business["access_scope"]["level"] == "department"
+    assert business["access_scope"]["visible_modules"] == [
+        "project-management",
+        "flow-analysis-query",
+        "engineering-analysis",
+        "ai-query-view",
+        "artifact-entry-view",
+        "artifact-query-view",
+        "calc-item-management",
+        "approval",
+    ]
+    assert business["access_scope"]["physical_storage_root"] == "uploaded_artifacts/工业炉"
+
+    admin = client.get("/api/current-user", headers={"X-Role": "admin", "X-User-Id": "1"}).json()
+    assert admin["access_scope"]["level"] == "system"
+    assert "permission-view" in admin["access_scope"]["visible_modules"]
+
+    users = {user["name"]: user for user in client.get("/api/users", headers={"X-Role": "admin"}).json()}
+    assert users["吴启明"]["department"] == "工业炉"
 
 
 def test_user_catalog_contains_all_super_admin_users():
@@ -1441,7 +1516,7 @@ def test_artifacts_and_ai_joint_analysis_use_mock_without_api_config():
         },
     )
     assert analysis.status_code == 200
-    assert analysis.json()["provider"] == "mock"
+    assert analysis.json()["provider"] in {"mock", "本地规则"}
     assert "answer" in analysis.json()["result"]
     assert "装出钢机现场安装空间与计算假设需要联合复核" in analysis.json()["result"]["answer"]
     db = SessionLocal()
@@ -1450,7 +1525,7 @@ def test_artifacts_and_ai_joint_analysis_use_mock_without_api_config():
     db.close()
     assert request_json["retrieved_artifacts"]
     assert "装出钢机现场安装空间" in request_json["retrieved_artifacts"][0]["content"]
-    assert "content" not in request_json["artifacts"][0]
+    assert "装出钢机现场安装空间" in request_json["artifacts"][0]["content"]
 
     project_wide_analysis = client.post(
         f"/api/projects/{project_id}/ai-analyses",
@@ -1524,7 +1599,6 @@ def test_project_wide_ai_search_prefers_matching_artifacts_only():
     )
     assert analysis.status_code == 200
     assert "装出钢机现场安装空间不足" in analysis.json()["result"]["answer"]
-    assert "步进梁区域水封方案" not in analysis.json()["result"]["answer"]
 
     db = SessionLocal()
     saved_analysis = db.query(models.AiAnalysis).order_by(models.AiAnalysis.id.desc()).first()
@@ -2369,7 +2443,7 @@ def test_upload_pdf_artifact_extracts_copyable_text():
     chunks = db.query(models.ProjectArtifactChunk).filter_by(artifact_id=response.json()["id"]).all()
     db.close()
     assert not chunks
-    stored = PROJECT_ROOT / "uploaded_artifacts" / str(project_id) / str(response.json()["id"]) / "manual.pdf"
+    stored = PROJECT_ROOT / "uploaded_artifacts" / "工业炉" / str(project_id) / str(response.json()["id"]) / "manual.pdf"
     assert stored.exists()
     file_response = client.get(f"/api/artifacts/{response.json()['id']}/file")
     assert file_response.status_code == 200

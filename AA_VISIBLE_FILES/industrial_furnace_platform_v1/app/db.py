@@ -37,3 +37,8 @@ def init_db() -> None:
     from app import models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
+    if DATABASE_URL.startswith("sqlite"):
+        with engine.begin() as connection:
+            columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(projects)").fetchall()}
+            if "department" not in columns:
+                connection.exec_driver_sql("ALTER TABLE projects ADD COLUMN department VARCHAR(64) NOT NULL DEFAULT '工业炉'")
