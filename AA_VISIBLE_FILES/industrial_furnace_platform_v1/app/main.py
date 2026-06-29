@@ -27,6 +27,7 @@ from app import models
 from app.ai_client import run_joint_analysis
 from app.db import SessionLocal, get_db, init_db
 from app.executors import run_template
+from app.industrial_furnace_knowledge import weighted_query_terms, weighted_term_score
 from app.lightrag_retrieval import search_with_lightrag
 from app.schemas import (
     ApprovalActionRequest,
@@ -151,6 +152,7 @@ ALL_MENU_MODULES = [
     "artifact-query-view",
     "calc-item-management",
     "approval",
+    "ai-query-view",
     "digital-twin",
     "flow-analysis-query",
     "engineering-analysis",
@@ -667,6 +669,7 @@ def _tokenize_search_terms(text: str) -> list[str]:
         tokens.update({"坯料断面", "坯料", "断面"})
     if "图号" in raw:
         tokens.update({"doc", "doc no", "doc. no"})
+    tokens.update(weighted_query_terms(text))
     return sorted(tokens, key=lambda token: (-len(token), token))
 
 
@@ -725,17 +728,17 @@ def _merge_retrieved_rows(row_groups: list[list[dict]], limit: int = 8) -> list[
             artifact_id = int(row.get("artifact_id") or 0)
             if artifact_id <= 0:
                 continue
-            score = int(row.get("score") or 0)
+            score = float(row.get("score") or 0)
             provider_bonus = 5 if row.get("retrieval_provider") == "lightrag" else 0
-            total_score = score + provider_bonus
+            total_score = score + provider_bonus + weighted_term_score(str(row.get("content") or ""))
             existing = merged.get(artifact_id)
             candidate = {**row, "score": total_score}
-            if existing is None or total_score > int(existing.get("score") or 0):
+            if existing is None or total_score > float(existing.get("score") or 0):
                 merged[artifact_id] = candidate
-            elif total_score == int(existing.get("score") or 0):
+            elif total_score == float(existing.get("score") or 0):
                 if len(str(row.get("content") or "")) > len(str(existing.get("content") or "")):
                     merged[artifact_id] = candidate
-    return sorted(merged.values(), key=lambda row: (int(row.get("score") or 0), int(row.get("artifact_id") or 0)), reverse=True)[:limit]
+    return sorted(merged.values(), key=lambda row: (float(row.get("score") or 0), int(row.get("artifact_id") or 0)), reverse=True)[:limit]
 
 
 def _search_project_artifacts(db: Session, project_id: int, question: str, artifact_ids: list[int], limit: int = 8) -> list[dict]:
@@ -743,14 +746,16 @@ def _search_project_artifacts(db: Session, project_id: int, question: str, artif
     if artifact_ids:
         query = query.filter(models.ProjectArtifact.id.in_(artifact_ids))
     keywords = _tokenize_search_terms(question)
+    query_weighted_terms = weighted_query_terms(question)
     complex_question = any(len(keyword) >= 8 or re.search(r"[a-z0-9]", keyword) for keyword in keywords)
     scored = []
     for artifact in query.all():
         haystack = _artifact_search_text(artifact)
         if not haystack.strip():
             continue
-        score = 0
+        score = 0.0
         matched_keywords: set[str] = set()
+        negative_keywords: set[str] = set()
         for keyword in keywords:
             if keyword in haystack:
                 score += max(3, len(keyword))
@@ -763,6 +768,14 @@ def _search_project_artifacts(db: Session, project_id: int, question: str, artif
             negative_match = re.search(rf"{re.escape(keyword)}.{{0,8}}(无关|不涉及|未出现|没有|不包含)|(?:无关|不涉及|未出现|没有|不包含).{{0,8}}{re.escape(keyword)}", haystack)
             if negative_match:
                 score -= max(3, len(keyword))
+                negative_keywords.add(keyword)
+                matched_keywords.discard(keyword)
+        if matched_keywords and matched_keywords.issubset(negative_keywords):
+            continue
+        weighted_overlap = set(query_weighted_terms).intersection(weighted_query_terms(haystack))
+        if weighted_overlap:
+            score += weighted_term_score(" ".join(weighted_overlap)) * 4
+        score += weighted_term_score(haystack, query_weighted_terms) * 0.15
         if not keywords:
             score = 1
         max_matched_length = max((len(keyword) for keyword in matched_keywords), default=0)
@@ -1898,14 +1911,21 @@ async def create_ai_analysis(
                 "result": json.loads(result.output_json) if result else None,
             }
         )
-    selected_artifact_ids = payload.artifact_ids or [artifact.id for artifact in db.query(models.ProjectArtifact).filter_by(project_id=project_id, status="ACTIVE").all()]
+    project_artifacts = db.query(models.ProjectArtifact).filter_by(project_id=project_id, status="ACTIVE").all()
+    project_artifact_ids = {artifact.id for artifact in project_artifacts}
+    if payload.artifact_ids:
+        selected_artifact_ids = [artifact_id for artifact_id in payload.artifact_ids if artifact_id in project_artifact_ids]
+        if not selected_artifact_ids:
+            selected_artifact_ids = [artifact.id for artifact in project_artifacts]
+    else:
+        selected_artifact_ids = [artifact.id for artifact in project_artifacts]
     artifacts = []
     for artifact_id in selected_artifact_ids:
         artifact = db.get(models.ProjectArtifact, artifact_id)
         if artifact is None:
             raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": f"资料不存在: {artifact_id}"})
         if artifact.project_id != project_id:
-            raise HTTPException(status_code=400, detail={"code": "PARAM_INVALID", "message": f"资料不属于当前项目: {artifact_id}"})
+            continue
         artifacts.append(
             {
                 "artifact_id": artifact.id,

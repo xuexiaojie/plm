@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from typing import Any
 
 from app import models
+from app.industrial_furnace_knowledge import term_protected_chunks
 
 
 def _env_flag(name: str) -> bool:
@@ -223,10 +224,19 @@ async def search_with_lightrag(
         try:
             if not ready_marker.exists():
                 process_options = runtime_settings["LIGHTRAG_PROCESS_OPTIONS"]
+                documents: list[str] = []
+                document_ids: list[str] = []
+                file_paths: list[str] = []
+                for artifact in artifact_docs:
+                    chunks = term_protected_chunks(artifact.content) or [artifact.content]
+                    for index, chunk in enumerate(chunks, start=1):
+                        documents.append(chunk)
+                        document_ids.append(f"artifact-{artifact.id}-chunk-{index}")
+                        file_paths.append(_artifact_file_path(artifact.id))
                 await rag.apipeline_enqueue_documents(
-                    [artifact.content for artifact in artifact_docs],
-                    ids=[f"artifact-{artifact.id}" for artifact in artifact_docs],
-                    file_paths=[_artifact_file_path(artifact.id) for artifact in artifact_docs],
+                    documents,
+                    ids=document_ids,
+                    file_paths=file_paths,
                     process_options=process_options,
                 )
                 await rag.apipeline_process_enqueue_documents()

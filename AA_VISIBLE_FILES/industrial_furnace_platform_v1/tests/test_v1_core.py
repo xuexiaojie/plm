@@ -19,6 +19,7 @@ from fastapi.testclient import TestClient
 
 from app import models
 from app import ai_client as ai_client_module
+from app.industrial_furnace_knowledge import term_protected_chunks, weighted_query_terms
 from app import main as main_module
 from app import runtime_config as runtime_config_module
 from app.db import SessionLocal, init_db
@@ -142,6 +143,10 @@ def test_index_page_loads_console():
         "expectedAiProviders",
         "normalizedAiResponses",
         "renderAiErrorMeta",
+        "if (!state.projects.length) await loadProjects()",
+        "syncArtifactProjectSelection(projectId, { updateQuery: true, persist: true })",
+        "暂无可访问工程项目",
+        "后端已识别配置",
         "setAiViewMode",
         "renderFlowAnalysis",
         "能量流分析",
@@ -277,7 +282,7 @@ def test_run_joint_analysis_runs_volc_then_deepseek_review(tmp_path, monkeypatch
     assert result["fallback_reason"] == "search_1_review_1_success"
 
 
-def test_run_joint_analysis_uses_deepseek_only_for_knowledge_lookup(tmp_path, monkeypatch):
+def test_run_joint_analysis_uses_three_models_for_knowledge_lookup(tmp_path, monkeypatch):
     monkeypatch.setattr(runtime_config_module, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(runtime_config_module, "WORKSPACE_TMP_DIR", tmp_path / "_missing_tmp_dir")
     for key in runtime_config_module.AI_ENV_KEYS:
@@ -316,9 +321,13 @@ def test_run_joint_analysis_uses_deepseek_only_for_knowledge_lookup(tmp_path, mo
             return False
 
         async def post(self, url, json=None, headers=None):
-            if "deepseek.example" not in url:
-                raise AssertionError("AI 查询只应调用 DeepSeek")
-            return FakeResponse({"choices": [{"message": {"content": "根据技术性能表，出炉温度为 980～1150℃。"}}]})
+            if "deepseek.example" in url:
+                return FakeResponse({"choices": [{"message": {"content": "DeepSeek：根据技术性能表，出炉温度为 980～1150℃。"}}]})
+            if "zhipu.example" in url:
+                return FakeResponse({"choices": [{"message": {"content": "智谱清言：根据资料，出炉温度为 980～1150℃。"}}]})
+            if "volc.example" in url:
+                return FakeResponse({"choices": [{"message": {"content": "火山大模型：技术性能表显示 980～1150℃。"}}]})
+            raise AssertionError(f"Unexpected URL: {url}")
 
     monkeypatch.setattr(ai_client_module.httpx, "AsyncClient", FakeAsyncClient)
 
@@ -336,12 +345,13 @@ def test_run_joint_analysis_uses_deepseek_only_for_knowledge_lookup(tmp_path, mo
         )
     )
 
-    assert result["provider"] == "DeepSeek"
-    assert result["fallback_reason"] == "knowledge_lookup_deepseek_only"
+    assert result["provider"] == "智谱清言+DeepSeek+火山大模型"
+    assert result["fallback_reason"] == "knowledge_lookup_three_models"
     assert result["diagnostics"]["analysis_type"] == "knowledge_lookup"
-    assert result["diagnostics"]["workflow_provider_order"] == ["DeepSeek"]
-    assert len(result["responses"]) == 1
-    assert result["responses"][0]["workflow_role"] == "knowledge_lookup"
+    assert result["diagnostics"]["workflow_provider_order"] == ["智谱清言", "DeepSeek", "火山大模型"]
+    assert len(result["responses"]) == 3
+    assert [response["provider"] for response in result["responses"]] == ["智谱清言", "DeepSeek", "火山大模型"]
+    assert all(response["workflow_role"] == "knowledge_lookup" for response in result["responses"])
 
 
 def test_artifact_answer_does_not_confuse_bujinliang_with_gudingliang_doc_number():
@@ -392,6 +402,29 @@ def test_artifact_answer_prefers_word_like_documents_for_cooling_water_question(
     assert "管径匹配" in answer
     assert "清理过滤器" in answer
     assert "地坑施工" not in answer
+
+
+def test_artifact_answer_keeps_structured_answer_for_numbered_cooling_water_question():
+    prompt = json.dumps(
+        {
+            "question": "1. 加热炉冷却水管路设计及操作维护需注意事项建议是什么？",
+            "retrieved_artifacts": [
+                {
+                    "type_name": "现场反馈",
+                    "title": "加热炉冷却水管路设计及操作维护需注意事项建议-2026.6.14.docx",
+                    "content": "已解析 Word 正文 加热炉冷却水管路设计及操作维护需注意事项建议。管路设计应在每个回路顶部设置排气阀。操作维护阶段要定期清理流量开关探头表面积垢。",
+                }
+            ],
+            "artifacts": [],
+        },
+        ensure_ascii=False,
+    )
+
+    answer = ai_client_module._artifact_answer(prompt)
+
+    assert "资料中未找到相关内容" not in answer
+    assert "排气阀" in answer
+    assert "清理流量开关" in answer
 
 
 def test_artifact_answer_prefers_parameter_table_for_exit_temperature_question():
@@ -686,6 +719,19 @@ def test_provider_request_timeout_uses_shorter_timeout_for_review_mode(monkeypat
     assert ai_client_module._provider_request_timeout(deepseek, prompt) == 12
     assert ai_client_module._provider_request_timeout(zhipu, prompt) == 18
     assert ai_client_module._provider_request_timeout(volc, prompt) == 9
+
+
+def test_zhipu_uses_dedicated_timeout_and_retries_for_knowledge_lookup(monkeypatch):
+    monkeypatch.setenv("CLAUDE_TIMEOUT_SECONDS", "90")
+    monkeypatch.setenv("CLAUDE_MAX_RETRIES", "1")
+    monkeypatch.setenv("CLAUDE_KNOWLEDGE_TIMEOUT_SECONDS", "160")
+    monkeypatch.setenv("CLAUDE_KNOWLEDGE_MAX_RETRIES", "3")
+
+    zhipu = {"name": "智谱清言"}
+    prompt = json.dumps({"analysis_type": "knowledge_lookup", "question": "测试"}, ensure_ascii=False)
+
+    assert ai_client_module._provider_request_timeout(zhipu, prompt) == 160
+    assert ai_client_module._provider_max_retries(zhipu, prompt) == 3
 
 
 def test_zhipu_retries_once_after_read_timeout(tmp_path, monkeypatch):
@@ -1001,6 +1047,7 @@ def test_current_user_exposes_department_permission_template():
 
     admin = client.get("/api/current-user", headers={"X-Role": "admin", "X-User-Id": "1"}).json()
     assert admin["access_scope"]["level"] == "system"
+    assert "ai-query-view" in admin["access_scope"]["visible_modules"]
     assert "permission-view" in admin["access_scope"]["visible_modules"]
 
     users = {user["name"]: user for user in client.get("/api/users", headers={"X-Role": "admin"}).json()}
@@ -1606,6 +1653,179 @@ def test_project_wide_ai_search_prefers_matching_artifacts_only():
     db.close()
     assert len(request_json["retrieved_artifacts"]) == 1
     assert request_json["retrieved_artifacts"][0]["title"] == "装出钢机问题记录"
+
+
+def test_industrial_furnace_terms_drive_retrieval_order():
+    init_db()
+    project = client.post(
+        "/api/projects",
+        headers={"X-Role": "engineer"},
+        json={"code": f"PRJ-TERM-{uuid.uuid4().hex[:8].upper()}", "name": "工业炉词库项目", "owner_user_id": 2, "department": "工业炉"},
+    )
+    assert project.status_code == 200
+    project_id = project.json()["id"]
+
+    item = client.post(
+        f"/api/projects/{project_id}/items",
+        headers={"X-Role": "engineer"},
+        json={"code": f"ITEM-{uuid.uuid4().hex[:6].upper()}", "name": "词库资料", "furnace_type": "walking_beam_furnace", "business_scope": "资料测试", "design_stage": "V1", "status": "ACTIVE"},
+    )
+    assert item.status_code == 200
+    item_id = item.json()["id"]
+
+    weighted_artifact = client.post(
+        f"/api/projects/{project_id}/artifacts",
+        headers={"X-Role": "engineer"},
+        json={
+            "project_item_id": item_id,
+            "artifact_type": "technical_description",
+            "title": "炉膛压力与汽化冷却说明",
+            "source_code": "DOC-TERM-001",
+            "content": "炉膛压力、汽化冷却、支撑梁和热效率需要联合校核，烧嘴燃气系统同步复核。",
+        },
+    )
+    assert weighted_artifact.status_code == 200
+    generic_artifact = client.post(
+        f"/api/projects/{project_id}/artifacts",
+        headers={"X-Role": "engineer"},
+        json={
+            "project_item_id": item_id,
+            "artifact_type": "technical_description",
+            "title": "一般施工说明",
+            "source_code": "DOC-TERM-002",
+            "content": "施工现场需要复核设备安装空间和材料到货计划。",
+        },
+    )
+    assert generic_artifact.status_code == 200
+
+    rows = main_module._search_project_artifacts(
+        SessionLocal(),
+        project_id,
+        "炉膛压力和汽化冷却怎么查新？",
+        [weighted_artifact.json()["id"], generic_artifact.json()["id"]],
+        limit=2,
+    )
+    assert rows[0]["title"] == "炉膛压力与汽化冷却说明"
+    assert weighted_query_terms("炉膛压力和汽化冷却怎么查新？")[:2] == ["汽化冷却", "炉膛压力"]
+
+
+def test_industrial_furnace_chunking_keeps_terms_whole():
+    text = "A" * 19 + "固溶热处理" + "B" * 30
+    chunks = term_protected_chunks(text, chunk_size=22, overlap=0)
+    assert any("固溶热处理" in chunk for chunk in chunks)
+    assert all("固溶热" not in chunk or "固溶热处理" in chunk for chunk in chunks)
+
+
+def test_ai_retrieval_stays_within_user_department():
+    init_db()
+    industrial_project = client.post(
+        "/api/projects",
+        headers={"X-Role": "engineer"},
+        json={"code": f"PRJ-IND-{uuid.uuid4().hex[:8].upper()}", "name": "工业炉查新项目", "owner_user_id": 2, "department": "工业炉"},
+    )
+    assert industrial_project.status_code == 200
+    steel_project = client.post(
+        "/api/projects",
+        headers={"X-Role": "admin"},
+        json={"code": f"PRJ-STL-{uuid.uuid4().hex[:8].upper()}", "name": "炼钢查新项目", "owner_user_id": 1, "department": "炼钢"},
+    )
+    assert steel_project.status_code == 200
+
+    industrial_item = client.post(
+        f"/api/projects/{industrial_project.json()['id']}/items",
+        headers={"X-Role": "engineer"},
+        json={"code": f"ITEM-{uuid.uuid4().hex[:6].upper()}", "name": "工业炉资料", "furnace_type": "walking_beam_furnace", "business_scope": "资料测试", "design_stage": "V1", "status": "ACTIVE"},
+    )
+    assert industrial_item.status_code == 200
+    steel_item = client.post(
+        f"/api/projects/{steel_project.json()['id']}/items",
+        headers={"X-Role": "admin"},
+        json={"code": f"ITEM-{uuid.uuid4().hex[:6].upper()}", "name": "炼钢资料", "furnace_type": "walking_beam_furnace", "business_scope": "资料测试", "design_stage": "V1", "status": "ACTIVE"},
+    )
+    assert steel_item.status_code == 200
+
+    industrial_artifact = client.post(
+        f"/api/projects/{industrial_project.json()['id']}/artifacts",
+        headers={"X-Role": "engineer"},
+        json={"project_item_id": industrial_item.json()["id"], "artifact_type": "technical_description", "title": "工业炉炉膛压力记录", "source_code": "DOC-IND-001", "content": "炉膛压力查新范围限定工业炉项目资料。"},
+    )
+    assert industrial_artifact.status_code == 200
+    steel_artifact = client.post(
+        f"/api/projects/{steel_project.json()['id']}/artifacts",
+        headers={"X-Role": "admin"},
+        json={"project_item_id": steel_item.json()["id"], "artifact_type": "technical_description", "title": "炼钢炉膛压力记录", "source_code": "DOC-STL-001", "content": "炉膛压力查新范围属于炼钢项目资料。"},
+    )
+    assert steel_artifact.status_code == 200
+
+    analysis = client.post(
+        f"/api/projects/{industrial_project.json()['id']}/ai-analyses",
+        headers={"X-Role": "engineer"},
+        json={"project_item_id": industrial_item.json()["id"], "equipment_name": "项目资料", "execution_ids": [], "artifact_ids": [], "question": "炉膛压力查新范围是什么？"},
+    )
+    assert analysis.status_code == 200
+    db = SessionLocal()
+    saved_analysis = db.query(models.AiAnalysis).order_by(models.AiAnalysis.id.desc()).first()
+    request_json = json.loads(saved_analysis.request_json)
+    db.close()
+    assert request_json["retrieved_artifacts"][0]["title"] == "工业炉炉膛压力记录"
+    assert all(row["artifact_id"] != steel_artifact.json()["id"] for row in request_json["retrieved_artifacts"])
+
+
+def test_ai_analysis_ignores_stale_cross_project_artifact_ids():
+    init_db()
+    first_project = client.post(
+        "/api/projects",
+        json={"code": f"PRJ-OLD-{uuid.uuid4().hex[:8].upper()}", "name": "旧资料项目", "owner_user_id": 2},
+    )
+    assert first_project.status_code == 200
+    second_project = client.post(
+        "/api/projects",
+        json={"code": f"PRJ-NEW-{uuid.uuid4().hex[:8].upper()}", "name": "当前资料项目", "owner_user_id": 2},
+    )
+    assert second_project.status_code == 200
+
+    first_item = client.post(
+        f"/api/projects/{first_project.json()['id']}/items",
+        json={"code": f"ITEM-{uuid.uuid4().hex[:6].upper()}", "name": "旧资料名目", "furnace_type": "walking_beam_furnace", "business_scope": "资料测试", "design_stage": "V1", "status": "ACTIVE"},
+    )
+    assert first_item.status_code == 200
+    second_item = client.post(
+        f"/api/projects/{second_project.json()['id']}/items",
+        json={"code": f"ITEM-{uuid.uuid4().hex[:6].upper()}", "name": "当前资料名目", "furnace_type": "walking_beam_furnace", "business_scope": "资料测试", "design_stage": "V1", "status": "ACTIVE"},
+    )
+    assert second_item.status_code == 200
+
+    old_artifact = client.post(
+        f"/api/projects/{first_project.json()['id']}/artifacts",
+        headers={"X-Role": "engineer"},
+        json={"project_item_id": first_item.json()["id"], "artifact_type": "technical_description", "title": "旧项目资料", "source_code": "DOC-OLD", "content": "旧项目炉膛压力资料不应进入当前项目。"},
+    )
+    assert old_artifact.status_code == 200
+    current_artifact = client.post(
+        f"/api/projects/{second_project.json()['id']}/artifacts",
+        headers={"X-Role": "engineer"},
+        json={"project_item_id": second_item.json()["id"], "artifact_type": "technical_description", "title": "当前项目资料", "source_code": "DOC-NEW", "content": "当前项目炉膛压力资料用于 AI 查询。"},
+    )
+    assert current_artifact.status_code == 200
+
+    analysis = client.post(
+        f"/api/projects/{second_project.json()['id']}/ai-analyses",
+        headers={"X-Role": "engineer"},
+        json={
+            "project_item_id": second_item.json()["id"],
+            "equipment_name": "项目资料",
+            "execution_ids": [],
+            "artifact_ids": [old_artifact.json()["id"], current_artifact.json()["id"]],
+            "question": "炉膛压力资料在哪里？",
+        },
+    )
+    assert analysis.status_code == 200
+    db = SessionLocal()
+    saved_analysis = db.query(models.AiAnalysis).order_by(models.AiAnalysis.id.desc()).first()
+    request_json = json.loads(saved_analysis.request_json)
+    db.close()
+    assert [row["artifact_id"] for row in request_json["artifacts"]] == [current_artifact.json()["id"]]
+    assert all(row["artifact_id"] != old_artifact.json()["id"] for row in request_json["retrieved_artifacts"])
 
 
 def test_ai_analysis_formats_precaution_question_as_structured_answer():

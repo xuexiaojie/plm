@@ -549,8 +549,6 @@ def _artifact_answer(prompt: str) -> str:
     lines = []
     for index, sub_question in enumerate(questions, start=1):
         sub_answer = _artifact_answer_for_single_question(sub_question, retrieved_artifacts, artifacts)
-        if sub_answer.startswith("针对“"):
-            sub_answer = "资料中未找到相关内容。"
         lines.append(f"{index}. {sub_question}\n{sub_answer}")
     return "\n\n".join(lines)
 
@@ -859,7 +857,7 @@ def _call_local_retry_exhausted(provider: dict[str, Any], attempts: list[dict[st
 
 
 async def _call_single_model_provider(client: httpx.AsyncClient, provider: dict[str, Any], prompt: str) -> dict[str, Any]:
-    max_retries = _provider_max_retries(provider)
+    max_retries = _provider_max_retries(provider, prompt)
     timeout = _provider_request_timeout(provider, prompt)
     for attempt in range(max_retries + 1):
         try:
@@ -1082,7 +1080,10 @@ def _prompt_is_review_mode(prompt: str) -> bool:
 
 def _provider_request_timeout(provider: dict[str, Any], prompt: str = "") -> float:
     is_review_mode = _prompt_is_review_mode(prompt)
+    is_knowledge_lookup_mode = _is_knowledge_lookup_mode(prompt)
     if _provider_matches(provider, "智谱", "zhipu", "bigmodel", "glm"):
+        if is_knowledge_lookup_mode:
+            return float(os.getenv("CLAUDE_KNOWLEDGE_TIMEOUT_SECONDS", "150").strip() or "150")
         if is_review_mode:
             return float(os.getenv("CLAUDE_REVIEW_TIMEOUT_SECONDS", "20").strip() or "20")
         return float(os.getenv("CLAUDE_TIMEOUT_SECONDS", "90").strip() or "90")
@@ -1095,8 +1096,10 @@ def _provider_request_timeout(provider: dict[str, Any], prompt: str = "") -> flo
     return float(os.getenv("AI_TIMEOUT_SECONDS", "45").strip() or "45")
 
 
-def _provider_max_retries(provider: dict[str, Any]) -> int:
+def _provider_max_retries(provider: dict[str, Any], prompt: str = "") -> int:
     if _provider_matches(provider, "智谱", "zhipu", "bigmodel", "glm"):
+        if _is_knowledge_lookup_mode(prompt):
+            return int(os.getenv("CLAUDE_KNOWLEDGE_MAX_RETRIES", "2").strip() or "2")
         return int(os.getenv("CLAUDE_MAX_RETRIES", "1").strip() or "1")
     return int(os.getenv("AI_MAX_RETRIES", "0").strip() or "0")
 
@@ -1180,27 +1183,34 @@ def _pick_provider(providers: list[dict[str, Any]], token: str) -> dict[str, Any
 
 
 async def _run_knowledge_lookup_flow(client: httpx.AsyncClient, prompt: str, providers: list[dict[str, Any]]) -> tuple[dict[str, Any], list[dict[str, Any]], str]:
-    deepseek_provider = _pick_provider(providers, "deepseek")
-    if deepseek_provider is None:
-        miss_answer = "当前未配置 DeepSeek，无法执行 AI 查询检索。"
+    lookup_providers = _order_providers_by_tokens(providers, ["zhipu", "deepseek", "volcengine"])
+    if not lookup_providers:
+        miss_answer = "当前未配置可用大模型，无法执行 AI 查询检索。"
         return {
             "provider": "本地规则",
             "answer": miss_answer,
             "summary": miss_answer,
         }, [], "knowledge_lookup_provider_missing"
     draft_answer = _artifact_answer(prompt)
-    response = await _call_model_provider(client, deepseek_provider, _build_knowledge_lookup_prompt(prompt, str(deepseek_provider.get("name") or "DeepSeek")))
-    response["workflow_role"] = "knowledge_lookup"
-    answer = str(response.get("answer") or response.get("summary") or "").strip() or "资料中未找到相关内容。"
-    if "资料中未找到相关内容" in draft_answer:
-        answer = draft_answer
-        response["answer"] = draft_answer
-        response["summary"] = draft_answer
+    responses = await asyncio.gather(
+        *[
+            _call_model_provider(client, provider, _build_knowledge_lookup_prompt(prompt, str(provider.get("name") or "大模型")))
+            for provider in lookup_providers
+        ]
+    )
+    for response in responses:
+        response["workflow_role"] = "knowledge_lookup"
+        if "资料中未找到相关内容" in draft_answer:
+            response["answer"] = draft_answer
+            response["summary"] = draft_answer
+    successful = [response for response in responses if str(response.get("answer") or response.get("summary") or "").strip()]
+    primary = successful[0] if successful else {"provider": "本地规则", "answer": draft_answer, "summary": draft_answer}
+    answer = str(primary.get("answer") or primary.get("summary") or "").strip() or draft_answer or "资料中未找到相关内容。"
     return {
-        "provider": str(response.get("provider") or deepseek_provider.get("name") or "DeepSeek"),
+        "provider": "+".join(str(response.get("provider") or "大模型") for response in successful) if successful else "本地规则",
         "answer": answer,
         "summary": answer,
-    }, [response], "knowledge_lookup_deepseek_only"
+    }, responses, "knowledge_lookup_three_models"
 
 
 async def _run_plm_smart_analysis_flow(client: httpx.AsyncClient, prompt: str, providers: list[dict[str, Any]]) -> tuple[dict[str, Any], list[dict[str, Any]], str]:
@@ -1323,7 +1333,7 @@ async def run_joint_analysis(prompt: str) -> dict[str, Any]:
     providers = _configured_model_providers()
     analysis_type = _analysis_type(prompt)
     if _is_knowledge_lookup_mode(prompt):
-        workflow_providers = [provider for provider in providers if _provider_matches_token(provider, "deepseek")]
+        workflow_providers = _order_providers_by_tokens(providers, ["zhipu", "deepseek", "volcengine"])
     elif _is_plm_smart_analysis_mode(prompt):
         workflow_providers = _order_providers_by_tokens(providers, ["zhipu", "deepseek", "volcengine"])
     else:
